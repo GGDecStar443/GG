@@ -11,83 +11,45 @@ BG_BOTTOM = (26, 0, 51)
 NEON = (0, 255, 204)
 WHITE = (255, 255, 255)
 
-# Ищем шрифты во всех возможных местах
+# Жёстко прописанные пути (Bothost)
 _HERE = os.path.dirname(os.path.abspath(__file__))
+FONT_REGULAR = os.path.join(_HERE, "fonts", "DejaVuSans.ttf")
+FONT_BOLD = os.path.join(_HERE, "fonts", "DejaVuSans-Bold.ttf")
 
-_SEARCH_DIRS = [
-    os.path.join(_HERE, "fonts"),
-    os.path.join(_HERE, "fonts_src"),
-    _HERE,
-    "/app/fonts",
-    "/app/fonts_src",
-    "/app",
-    "/usr/share/fonts/truetype/dejavu",
-    "/usr/share/fonts/dejavu",
-]
-
-# Возможные имена для обычного и жирного шрифта
-_REGULAR_NAMES = [
-    "DejaVuSans.ttf",
-    "Onest-Regular.ttf",
-    "Manrope-Regular.ttf",
-    "arial.ttf",
-]
-_BOLD_NAMES = [
-    "DejaVuSans-Bold.ttf",
-    "Onest-Bold.ttf",
-    "Unbounded-Bold.ttf",
-    "BebasNeue-Regular.ttf",
-    "arialbd.ttf",
-]
-
-# Отладка при первом импорте
-print(f"[FONT-INIT] _HERE={_HERE}")
-for d in _SEARCH_DIRS:
-    if os.path.exists(d):
-        try:
-            print(f"[FONT-INIT] {d} → {os.listdir(d)}")
-        except Exception:
-            pass
+# Отладка при старте
+print(f"[FONT] _HERE = {_HERE}")
+print(f"[FONT] regular = {FONT_REGULAR} → exists: {os.path.exists(FONT_REGULAR)}")
+print(f"[FONT] bold    = {FONT_BOLD} → exists: {os.path.exists(FONT_BOLD)}")
 
 
 def _find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Ищет TTF с кириллицей. Перебирает все папки и все возможные имена."""
-    names = _BOLD_NAMES if bold else _REGULAR_NAMES
+    """Грузит шрифт с жёсткого пути /app/fonts/."""
+    primary = FONT_BOLD if bold else FONT_REGULAR
 
-    # 1. Сначала ищем во всех папках с ожидаемыми именами
-    for dir_path in _SEARCH_DIRS:
-        if not os.path.isdir(dir_path):
-            continue
-        for name in names:
-            path = os.path.join(dir_path, name)
-            if os.path.exists(path):
-                try:
-                    font = ImageFont.truetype(path, size=size)
-                    print(f"[FONT] OK ({size}pt, bold={bold}): {path}")
-                    return font
-                except (OSError, IOError) as e:
-                    print(f"[FONT] Fail {path}: {e}")
+    candidates = [
+        primary,
+        os.path.join(_HERE, "fonts", "DejaVuSans-Bold.ttf"),
+        os.path.join(_HERE, "fonts", "DejaVuSans.ttf"),
+        "/app/fonts/DejaVuSans-Bold.ttf",
+        "/app/fonts/DejaVuSans.ttf",
+        # системные (на случай linux-сервера с установленными шрифтами)
+        f"/usr/share/fonts/truetype/dejavu/DejaVuSans{'-Bold' if bold else ''}.ttf",
+    ]
 
-    # 2. Fallback: ищем ЛЮБОЙ .ttf в этих папках (первый попавшийся)
-    for dir_path in _SEARCH_DIRS:
-        if not os.path.isdir(dir_path):
-            continue
-        for f in os.listdir(dir_path):
-            if f.lower().endswith(".ttf"):
-                path = os.path.join(dir_path, f)
-                try:
-                    font = ImageFont.truetype(path, size=size)
-                    print(f"[FONT] FALLBACK ({size}pt): {path}")
-                    return font
-                except (OSError, IOError):
-                    continue
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, size=size)
+                print(f"[FONT] OK {size}pt bold={bold} → {path}")
+                return font
+            except Exception as e:
+                print(f"[FONT] fail {path}: {e}")
 
-    print(f"[FONT] WARNING: No Cyrillic font found for size={size}, bold={bold}!")
+    print(f"[FONT] WARNING: no font found for size={size}, bold={bold} — using default!")
     return ImageFont.load_default()
 
 
 def _gradient_background() -> Image.Image:
-    """Создаёт вертикальный градиент."""
     base = Image.new("RGB", (WIDTH, HEIGHT), BG_TOP)
     top_r, top_g, top_b = BG_TOP
     bot_r, bot_g, bot_b = BG_BOTTOM
@@ -135,7 +97,6 @@ def _wrap(text: str, font, max_width: int, draw: ImageDraw.ImageDraw) -> list[st
 
 
 def create_card(data: Dict[str, str | int]) -> bytes:
-    """Генерирует карточку 1080x1920 с вердиктом."""
     img = _gradient_background()
     draw = ImageDraw.Draw(img)
 
