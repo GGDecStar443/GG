@@ -8,13 +8,14 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME: str = os.getenv("BOT_USERNAME", "your_bot_username")
 
-# Groq (Llama 4 Vision)
+# LLM-провайдер (VseGPT, OpenAI-совместимый API)
+# По умолчанию — VseGPT + GPT-4o-mini (vision)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 GROQ_API_URL: str = os.getenv(
     "GROQ_API_URL",
-    "https://api.groq.com/openai/v1/chat/completions",
+    "https://api.vsegpt.ru/v1/chat/completions",
 )
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct")
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "openai/gpt-4o-mini")
 
 # Лимиты и логи
 DAILY_LIMIT: int = int(os.getenv("DAILY_LIMIT", "5"))
