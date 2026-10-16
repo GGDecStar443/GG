@@ -14,6 +14,9 @@ WHITE = (255, 255, 255)
 def _find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     """Ищет доступный TTF-шрифт, иначе возвращает дефолтный."""
     candidates = [
+        # Windows — системный Arial
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        # Linux / Docker — DejaVu
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold
@@ -53,7 +56,7 @@ def _color_for_flags(flags: int) -> tuple:
 
 
 def _draw_centered(draw: ImageDraw.ImageDraw, text: str, font, y: int, fill) -> int:
-    """Рисует текст по центру. Возвращает y следующей строки."""
+    """Рисует текст по центру."""
     bbox = draw.textbbox((0, 0), text, font=font)
     w = bbox[2] - bbox[0]
     h = bbox[3] - bbox[1]
@@ -80,14 +83,10 @@ def _wrap(text: str, font, max_width: int, draw: ImageDraw.ImageDraw) -> list[st
 
 
 def create_card(data: Dict[str, str | int]) -> bytes:
-    """
-    Генерирует карточку 1080x1920 с вердиктом.
-    Возвращает PNG в байтах.
-    """
+    """Генерирует карточку 1080x1920 с вердиктом. Возвращает PNG в байтах."""
     img = _gradient_background()
     draw = ImageDraw.Draw(img)
 
-    # Шрифты
     font_logo = _find_font(70, bold=True)
     font_percent = _find_font(200, bold=True)
     font_label = _find_font(60, bold=True)
