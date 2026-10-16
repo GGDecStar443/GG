@@ -1,4 +1,4 @@
-# LLM-клиент под Groq (Llama 3.2 Vision, OpenAI-совместимый API)
+# LLM-клиент под Groq (Llama 4 Vision, OpenAI-совместимый API)
 import base64
 import re
 from typing import Dict
@@ -7,7 +7,7 @@ import httpx
 
 from config import GROQ_API_KEY, GROQ_API_URL, GROQ_MODEL
 
-# Жёсткий промт — требуем русский + ровно 5 строк
+# Промт для анализа
 PROMPT = """Ты — аналитик отношений. Проанализируй скрин переписки.
 
 КРИТИЧЕСКИ ВАЖНО: ответ должен содержать РОВНО 5 строк, каждая с новой строки.
@@ -53,14 +53,13 @@ def _parse_response(text: str) -> Dict[str, str | int]:
         elif upper.startswith("ВЫВОД"):
             result["verdict"] = line.split(":", 1)[-1].strip()
 
-    # Многострочный ВЫВОД — берём первые 3 предложения
     if "ВЫВОД" in text.upper():
         parts = re.split(r"ВЫВОД\s*:", text, flags=re.IGNORECASE)
         if len(parts) > 1:
             sentences = re.split(r"(?<=[.!?])\s+", parts[1].strip())
             result["verdict"] = " ".join(sentences[:3]).strip()
 
-    # Защита: если модель ответила по-английски — мапим на русский
+    # Защита от английского
     lang_map = {
         "he": "он", "she": "она", "both": "оба",
         "nobody": "никто", "you": "ты", "they": "оба",
@@ -73,10 +72,7 @@ def _parse_response(text: str) -> Dict[str, str | int]:
 
 
 async def analyze(image_bytes: bytes) -> Dict[str, str | int]:
-    """
-    Отправляет изображение в Groq (Llama 3.2 Vision).
-    Возвращает dict: flags (int), toxic, type, advice, verdict.
-    """
+    """Отправляет изображение в Groq (Llama 4 Vision)."""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
