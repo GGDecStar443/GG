@@ -12,6 +12,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    BufferedInputFile,
 )
 from aiogram.exceptions import TelegramAPIError
 
@@ -144,8 +145,9 @@ async def handle_photo(message: Message) -> None:
 
     # 7. Отправляем карточку с текстом и кнопкой
     try:
+        photo_file = BufferedInputFile(card_bytes, filename="toxic_check.png")
         await message.answer_photo(
-            photo=card_bytes,
+            photo=photo_file,
             caption=verdict_text,
             reply_markup=share_kb,
         )
