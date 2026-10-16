@@ -12,6 +12,9 @@ NEON = (0, 255, 204)
 WHITE = (255, 255, 255)
 GREY = (150, 150, 150)
 
+PADDING = 80                    # отступ по бокам
+MAX_TEXT_WIDTH = WIDTH - PADDING * 2   # 920px
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FONT_REGULAR = os.path.join(_HERE, "fonts", "DejaVuSans.ttf")
 FONT_BOLD = os.path.join(_HERE, "fonts", "DejaVuSans-Bold.ttf")
@@ -20,8 +23,8 @@ print(f"[FONT] regular = {FONT_REGULAR} → exists: {os.path.exists(FONT_REGULAR
 print(f"[FONT] bold    = {FONT_BOLD} → exists: {os.path.exists(FONT_BOLD)}")
 
 
+# ====================== ШРИФТЫ ======================
 def _find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Грузит шрифт с фиксированного пути."""
     primary = FONT_BOLD if bold else FONT_REGULAR
     candidates = [
         primary,
@@ -39,6 +42,85 @@ def _find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+# ====================== ГЕОМЕТРИЯ ======================
+def _measure(draw, text, font):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def _draw_centered(draw, text, font, y, fill) -> int:
+    """Рисует по центру. Возвращает Y конца строки."""
+    w, h = _measure(draw, text, font)
+    draw.text(((WIDTH - w) / 2, y), text, font=font, fill=fill)
+    return y + h
+
+
+def _wrap_text(draw, text, font, max_width):
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        test = (current + " " + word).strip()
+        w, _ = _measure(draw, test, font)
+        if w <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _fit_to_width(draw, text, max_width, base_size, bold=False, min_size=20):
+    """Подбирает размер шрифта, чтобы строка влезла в max_width."""
+    size = base_size
+    while size >= min_size:
+        font = _find_font(size, bold=bold)
+        w, _ = _measure(draw, text, font)
+        if w <= max_width:
+            return font
+        size -= 2
+    return _find_font(min_size, bold=bold)
+
+
+def _fit_block(draw, text, max_width, max_height, base_size, bold=False, min_size=22):
+    """
+    Авто-подгонка многострочного текста в область max_width × max_height.
+    Возвращает (font, lines) — гарантированно влезает по высоте,
+    лишние строки отбрасываются.
+    """
+    size = base_size
+    while size >= min_size:
+        font = _find_font(size, bold=bold)
+        lines = _wrap_text(draw, text, font, max_width)
+        line_h = _measure(draw, "Ай", font)[1] + 8
+        if len(lines) * line_h <= max_height:
+            return font, lines
+        size -= 2
+    # Если даже минимальный не влез — обрезаем по строкам
+    font = _find_font(min_size, bold=bold)
+    lines = _wrap_text(draw, text, font, max_width)
+    line_h = _measure(draw, "Ай", font)[1] + 8
+    max_lines = max(1, max_height // line_h)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        # Добавляем «…» к последней строке
+        if lines:
+            lines[-1] = lines[-1].rstrip(".,;:!? ") + "…"
+    return font, lines
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """Обрезка по границе слова с добавлением «…»."""
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rsplit(" ", 1)[0]
+    return cut.rstrip(".,;:!?") + "…"
+
+
+# ====================== ФОН ======================
 def _gradient_background() -> Image.Image:
     base = Image.new("RGB", (WIDTH, HEIGHT), BG_TOP)
     top_r, top_g, top_b = BG_TOP
@@ -61,127 +143,87 @@ def _color_for_flags(flags: int) -> tuple:
     return (231, 76, 60)
 
 
-def _measure(draw, text, font):
-    """Возвращает (width, height) текста."""
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-
-def _draw_centered(draw, text, font, y, fill) -> int:
-    """Рисует по центру. Возвращает Y следующей строки."""
-    w, h = _measure(draw, text, font)
-    draw.text(((WIDTH - w) / 2, y), text, font=font, fill=fill)
-    return y + h + 15
-
-
-def _wrap_text(draw, text, font, max_width) -> list[str]:
-    """Разбивает текст на строки по ширине (по словам)."""
-    words = text.split()
-    lines, current = [], ""
-    for word in words:
-        test = (current + " " + word).strip()
-        w, _ = _measure(draw, test, font)
-        if w <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def _fit_text_to_area(draw, text, max_width, max_height, base_size, bold, min_size=24):
-    """
-    Подбирает шрифт так, чтобы текст влез в область max_width × max_height.
-    Возвращает (font, lines).
-    """
-    size = base_size
-    while size >= min_size:
-        font = _find_font(size, bold=bold)
-        lines = _wrap_text(draw, text, font, max_width)
-        total_h = sum(_measure(draw, line, font)[1] + 10 for line in lines)
-        if total_h <= max_height:
-            return font, lines
-        size -= 4
-    # Если даже минимальный не влез — обрезаем по строкам
-    font = _find_font(min_size, bold=bold)
-    lines = _wrap_text(draw, text, font, max_width)
-    max_lines = max(1, max_height // (min_size + 8))
-    return font, lines[:max_lines]
-
-
-def _truncate_to_words(text: str, max_chars: int) -> str:
-    """Обрезает текст до max_chars по границе слова с добавлением «…»."""
-    if len(text) <= max_chars:
-        return text
-    cut = text[:max_chars].rsplit(" ", 1)[0]
-    return cut.rstrip(".,;:!?") + "…"
-
-
+# ====================== СБОРКА КАРТОЧКИ ======================
 def create_card(data: Dict[str, str | int]) -> bytes:
     img = _gradient_background()
     draw = ImageDraw.Draw(img)
 
-    # --- Шрифты ---
-    font_logo = _find_font(60, bold=True)
-    font_percent = _find_font(180, bold=True)
-    font_label = _find_font(50, bold=True)
-    font_section = _find_font(30, bold=False)
+    # ---------- 1. ЛОГОТИП (Y: 60–150) ----------
+    font_logo = _find_font(64, bold=True)
+    logo_w, logo_h = _measure(draw, "TOXIC CHECK", font_logo)
+    draw.text(((WIDTH - logo_w) / 2, 60), "TOXIC CHECK", font=font_logo, fill=NEON)
 
-    # --- Логотип ---
-    _draw_centered(draw, "TOXIC CHECK", font_logo, 80, NEON)
-
-    # --- Процент (жёстко на y=350) ---
+    # ---------- 2. ПРОЦЕНТ (Y: 260) ----------
     flags = int(data.get("flags", 0))
     flag_color = _color_for_flags(flags)
     percent_text = f"{flags}%"
+    font_percent = _find_font(200, bold=True)
     pw, ph = _measure(draw, percent_text, font_percent)
-    draw.text(((WIDTH - pw) / 2, 350), percent_text, font=font_percent, fill=flag_color)
 
-    # Подпись под процентом
-    _draw_centered(draw, "КРАСНЫХ ФЛАГОВ", font_section, 350 + ph + 20, WHITE)
+    percent_y = 260
+    draw.text(((WIDTH - pw) / 2, percent_y), percent_text, font=font_percent, fill=flag_color)
 
-    # --- Токсик и Тип ---
+    # ---------- 3. КРАСНЫХ ФЛАГОВ — строго ПОД цифрой ----------
+    font_caption = _find_font(34)
+    caption_y = percent_y + ph + 25   # +25px отступ от низа цифры
+    _draw_centered(draw, "КРАСНЫХ ФЛАГОВ", font_caption, caption_y, WHITE)
+
+    # ---------- 4. ТОКСИК (Y: 780) ----------
     y = 780
-    _draw_centered(draw, f"Токсик: {data.get('toxic', '—')}", font_label, y, WHITE)
+    toxic_text = f"Токсик: {data.get('toxic', '—')}"
+    # Авто-размер по ширине
+    font_label = _fit_to_width(draw, toxic_text, MAX_TEXT_WIDTH, base_size=58, bold=True, min_size=32)
+    _draw_centered(draw, toxic_text, font_label, y, WHITE)
     y += 90
-    _draw_centered(draw, f"Тип: {data.get('type', '—')}", font_label, y, WHITE)
 
-    # --- Совет (авторазмер под область) ---
-    y = 1050
+    # ---------- 5. ТИП (Y: 870) ----------
+    type_text = f"Тип: {data.get('type', '—')}"
+    # Авто-размер по ширине (важно — может быть длинным!)
+    font_type = _fit_to_width(draw, type_text, MAX_TEXT_WIDTH, base_size=58, bold=True, min_size=28)
+    _draw_centered(draw, type_text, font_type, y, WHITE)
+
+    # ---------- 6. СОВЕТ (Y: 1050–1300) ----------
+    y = 1060
+    font_section = _find_font(30)
     _draw_centered(draw, "СОВЕТ", font_section, y, NEON)
     y += 50
 
-    advice = _truncate_to_words(str(data.get("advice", "")), 130)
-    # Область для совета: ширина 960, высота 200
-    font_advice, advice_lines = _fit_text_to_area(
-        draw, advice, WIDTH - 120, 200, base_size=44, bold=False, min_size=28
+    advice = _truncate(str(data.get("advice", "")), 140)
+    font_advice, advice_lines = _fit_block(
+        draw, advice,
+        max_width=MAX_TEXT_WIDTH,
+        max_height=200,
+        base_size=42,
+        bold=False,
+        min_size=26,
     )
+    line_h = _measure(draw, "Ай", font_advice)[1] + 12
     for line in advice_lines:
-        y = _draw_centered(draw, line, font_advice, y, WHITE)
-        if y > 1300:
-            break
+        _draw_centered(draw, line, font_advice, y, WHITE)
+        y += line_h
 
-    # --- Вывод (авторазмер под область) ---
-    y = 1380
+    # ---------- 7. ВЫВОД (Y: 1400–1820) ----------
+    y = 1400
     _draw_centered(draw, "ВЫВОД", font_section, y, NEON)
     y += 50
 
-    verdict = _truncate_to_words(str(data.get("verdict", "")), 300)
-    font_verdict, verdict_lines = _fit_text_to_area(
-        draw, verdict, WIDTH - 120, 350, base_size=42, bold=False, min_size=26
+    verdict = _truncate(str(data.get("verdict", "")), 280)
+    font_verdict, verdict_lines = _fit_block(
+        draw, verdict,
+        max_width=MAX_TEXT_WIDTH,
+        max_height=380,
+        base_size=40,
+        bold=False,
+        min_size=24,
     )
+    line_h = _measure(draw, "Ай", font_verdict)[1] + 12
     for line in verdict_lines:
-        y = _draw_centered(draw, line, font_verdict, y, WHITE)
-        if y > 1780:
-            break
+        _draw_centered(draw, line, font_verdict, y, WHITE)
+        y += line_h
 
-    # --- Подпись бота ---
+    # ---------- 8. ПОДПИСЬ БОТА (Y: 1850) ----------
     font_small = _find_font(28)
-    w, _ = _measure(draw, f"@{BOT_USERNAME}", font_small)
-    draw.text(((WIDTH - w) / 2, HEIGHT - 70), f"@{BOT_USERNAME}", font=font_small, fill=GREY)
+    _draw_centered(draw, f"@{BOT_USERNAME}", font_small, HEIGHT - 70, GREY)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
