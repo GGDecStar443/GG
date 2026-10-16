@@ -1,4 +1,4 @@
-# LLM-клиент под Groq (Llama 4 Vision, OpenAI-совместимый API)
+# LLM-клиент под VseGPT (OpenAI-совместимый API, GPT-4o-mini / Gemini / Claude)
 import base64
 import re
 from typing import Dict
@@ -7,7 +7,7 @@ import httpx
 
 from config import GROQ_API_KEY, GROQ_API_URL, GROQ_MODEL
 
-# Промт для анализа
+# Промт для анализа скриншота переписки
 PROMPT = """Ты — аналитик отношений. Проанализируй скрин переписки.
 
 КРИТИЧЕСКИ ВАЖНО: ответ должен содержать РОВНО 5 строк, каждая с новой строки.
@@ -53,13 +53,14 @@ def _parse_response(text: str) -> Dict[str, str | int]:
         elif upper.startswith("ВЫВОД"):
             result["verdict"] = line.split(":", 1)[-1].strip()
 
+    # Если ВЫВОД многострочный — берём первые 3 предложения
     if "ВЫВОД" in text.upper():
         parts = re.split(r"ВЫВОД\s*:", text, flags=re.IGNORECASE)
         if len(parts) > 1:
             sentences = re.split(r"(?<=[.!?])\s+", parts[1].strip())
             result["verdict"] = " ".join(sentences[:3]).strip()
 
-    # Защита от английского
+    # Защита от английского — мапим на русский
     lang_map = {
         "he": "он", "she": "она", "both": "оба",
         "nobody": "никто", "you": "ты", "they": "оба",
@@ -72,7 +73,7 @@ def _parse_response(text: str) -> Dict[str, str | int]:
 
 
 async def analyze(image_bytes: bytes) -> Dict[str, str | int]:
-    """Отправляет изображение в Groq (Llama 4 Vision)."""
+    """Отправляет изображение в LLM и получает структурированный вердикт."""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
@@ -98,15 +99,15 @@ async def analyze(image_bytes: bytes) -> Dict[str, str | int]:
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(GROQ_API_URL, json=payload, headers=headers)
         if resp.status_code != 200:
-            raise RuntimeError(f"Groq API {resp.status_code}: {resp.text[:300]}")
+            raise RuntimeError(f"LLM API {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
 
     try:
         raw = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as e:
-        raise RuntimeError(f"Unexpected Groq response: {data}") from e
+        raise RuntimeError(f"Unexpected LLM response: {data}") from e
 
     return _parse_response(raw.strip())
