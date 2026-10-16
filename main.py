@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -43,6 +44,27 @@ share_kb = InlineKeyboardMarkup(
 )
 
 
+# ==================== ОТЛАДКА: список моделей Groq ====================
+async def _debug_list_groq_models() -> None:
+    """Выводит в лог список доступных моделей Groq. Удалить после настройки."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {config.GROQ_API_KEY}"},
+            )
+            log.info("=== GROQ MODELS (status=%s) ===", r.status_code)
+            data = r.json()
+            if "data" in data:
+                for m in data["data"]:
+                    log.info("MODEL: %s", m.get("id"))
+            else:
+                log.error("GROQ MODELS ERROR: %s", data)
+    except Exception as e:
+        log.exception("Failed to list Groq models: %s", e)
+# =====================================================================
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     """Приветствие и инструкция."""
@@ -81,7 +103,7 @@ async def handle_photo(message: Message) -> None:
         )
         return
 
-    # 2. Скачиваем фото во временный файл
+    # 2. Скачиваем фото
     tmp_path = None
     try:
         photo = message.photo[-1]
@@ -111,7 +133,7 @@ async def handle_photo(message: Message) -> None:
     # 3. Плейсхолдер
     wait_msg = await message.answer("🔍 Анализирую переписку…")
 
-    # 4. Анализ через Groq (Llama 3.2 Vision)
+    # 4. Анализ через Groq
     try:
         result = await gemini_client.analyze(image_bytes)
     except Exception as e:
@@ -142,7 +164,7 @@ async def handle_photo(message: Message) -> None:
         f"📝 {result['verdict']}"
     )
 
-    # 7. Отправляем карточку с текстом и кнопкой
+    # 7. Отправляем карточку
     try:
         await message.answer_photo(
             photo=card_bytes,
@@ -198,6 +220,10 @@ async def handle_callback(callback: CallbackQuery) -> None:
 async def main() -> None:
     """Инициализация БД и запуск поллинга."""
     await database.init_db()
+
+    # Отладочный вывод списка моделей Groq (удалить после настройки)
+    await _debug_list_groq_models()
+
     log.info(
         "Bot started. Model=%s | Daily limit=%s",
         config.GROQ_MODEL, config.DAILY_LIMIT,
