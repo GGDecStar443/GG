@@ -8,14 +8,13 @@ load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME: str = os.getenv("BOT_USERNAME", "your_bot_username")
 
-# Groq (Llama 3.2 Vision)
+# Groq (Llama 4 Vision)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 GROQ_API_URL: str = os.getenv(
     "GROQ_API_URL",
     "https://api.groq.com/openai/v1/chat/completions",
 )
-# Модели: llama-3.2-11b-vision-preview (быстрая) или llama-3.2-90b-vision-preview (умнее)
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.2-11b-vision-preview")
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct")
 
 # Лимиты и логи
 DAILY_LIMIT: int = int(os.getenv("DAILY_LIMIT", "5"))
