@@ -10,8 +10,6 @@ from aiogram.filters import CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
     BufferedInputFile,
 )
 from aiogram.exceptions import TelegramAPIError
@@ -34,14 +32,6 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
 dp = Dispatcher()
-
-# Inline-кнопка "Скинуть другу"
-SHARE_URL = f"https://t.me/{config.BOT_USERNAME}"
-share_kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Скинуть другу", url=SHARE_URL)],
-    ]
-)
 
 
 @dp.message(CommandStart())
@@ -143,13 +133,12 @@ async def handle_photo(message: Message) -> None:
         f"📝 {result['verdict']}"
     )
 
-    # 7. Отправляем карточку с текстом и кнопкой
+    # 7. Отправляем карточку с текстом (БЕЗ кнопки)
     try:
         photo_file = BufferedInputFile(card_bytes, filename="toxic_check.png")
         await message.answer_photo(
             photo=photo_file,
             caption=verdict_text,
-            reply_markup=share_kb,
         )
         await wait_msg.delete()
     except TelegramAPIError as e:
