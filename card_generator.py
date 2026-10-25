@@ -1,228 +1,217 @@
-# Генерация карточки 1080x1920 через Pillow (с точным позиционированием)
+# 4 разных дизайна карточек
 import io
 import os
-from typing import Dict
 from PIL import Image, ImageDraw, ImageFont
 from config import BOT_USERNAME
 
 WIDTH, HEIGHT = 1080, 1920
-BG_TOP = (10, 10, 10)
-BG_BOTTOM = (26, 0, 51)
-NEON = (0, 255, 204)
 WHITE = (255, 255, 255)
-GREY = (150, 150, 150)
-
-PADDING = 80
-MAX_TEXT_WIDTH = WIDTH - PADDING * 2   # 920px
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-FONT_REGULAR = os.path.join(_HERE, "fonts", "DejaVuSans.ttf")
-FONT_BOLD = os.path.join(_HERE, "fonts", "DejaVuSans-Bold.ttf")
-
-print(f"[FONT] regular = {FONT_REGULAR} → exists: {os.path.exists(FONT_REGULAR)}")
-print(f"[FONT] bold    = {FONT_BOLD} → exists: {os.path.exists(FONT_BOLD)}")
+_FONTS_DIR = os.path.join(_HERE, "fonts")
 
 
-# ====================== ШРИФТЫ ======================
-def _find_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    primary = FONT_BOLD if bold else FONT_REGULAR
-    candidates = [
-        primary,
-        os.path.join(_HERE, "fonts", "DejaVuSans-Bold.ttf"),
-        os.path.join(_HERE, "fonts", "DejaVuSans.ttf"),
-        "/app/fonts/DejaVuSans-Bold.ttf",
-        "/app/fonts/DejaVuSans.ttf",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size=size)
-            except Exception:
-                continue
+def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    for p in [
+        os.path.join(_FONTS_DIR, name),
+        os.path.join(_HERE, name),
+        f"/usr/share/fonts/truetype/dejavu/{name}",
+        f"C:/Windows/Fonts/{'arialbd.ttf' if bold else 'arial.ttf'}",
+    ]:
+        if os.path.exists(p):
+            try: return ImageFont.truetype(p, size=size)
+            except (OSError, IOError): continue
     return ImageFont.load_default()
 
 
-# ====================== ГЕОМЕТРИЯ ======================
-def _measure(draw, text, font):
-    """Возвращает (ширина, высота) текста."""
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-
-def _draw_centered(draw, text, font, y, fill, anchor="mt"):
-    """
-    Рисует текст по центру по горизонтали.
-    anchor:
-      "mt" — точка (WIDTH/2, y) = середина по X, ВЕРХ глифов по Y
-      "ms" — точка (WIDTH/2, y) = середина по X, BASELINE по Y
-      "mm" — точка (WIDTH/2, y) = середина по X, СЕРЕДИНА глифов по Y
-    """
-    draw.text((WIDTH / 2, y), text, font=font, fill=fill, anchor=anchor)
-
-
-def _wrap_text(draw, text, font, max_width):
-    words = text.split()
-    lines, current = [], ""
-    for word in words:
-        test = (current + " " + word).strip()
-        w, _ = _measure(draw, test, font)
-        if w <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def _fit_to_width(draw, text, max_width, base_size, bold=False, min_size=20):
-    """Подбирает размер шрифта, чтобы СТРОКА влезла в max_width."""
-    size = base_size
-    while size >= min_size:
-        font = _find_font(size, bold=bold)
-        w, _ = _measure(draw, text, font)
-        if w <= max_width:
-            return font
-        size -= 2
-    return _find_font(min_size, bold=bold)
-
-
-def _fit_block(draw, text, max_width, max_height, base_size, bold=False, min_size=22):
-    """
-    Авто-подгонка многострочного текста в область max_width × max_height.
-    Возвращает (font, lines), обрезает лишние строки с «…».
-    """
-    size = base_size
-    while size >= min_size:
-        font = _find_font(size, bold=bold)
-        lines = _wrap_text(draw, text, font, max_width)
-        _, line_h = _measure(draw, "Ай", font)
-        line_h += 12   # межстрочный отступ
-        if len(lines) * line_h <= max_height:
-            return font, lines
-        size -= 2
-    # Минимальный не влез — обрезаем строки
-    font = _find_font(min_size, bold=bold)
-    lines = _wrap_text(draw, text, font, max_width)
-    _, line_h = _measure(draw, "Ай", font)
-    line_h += 12
-    max_lines = max(1, max_height // line_h)
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        if lines:
-            lines[-1] = lines[-1].rstrip(".,;:!? ") + "…"
-    return font, lines
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    text = text.strip()
-    if len(text) <= max_chars:
-        return text
-    cut = text[:max_chars].rsplit(" ", 1)[0]
-    return cut.rstrip(".,;:!?") + "…"
-
-
-# ====================== ФОН ======================
-def _gradient_background() -> Image.Image:
-    base = Image.new("RGB", (WIDTH, HEIGHT), BG_TOP)
-    top_r, top_g, top_b = BG_TOP
-    bot_r, bot_g, bot_b = BG_BOTTOM
-    draw = ImageDraw.Draw(base)
+def _gradient(top, bot) -> Image.Image:
+    img = Image.new("RGB", (WIDTH, HEIGHT), top)
+    draw = ImageDraw.Draw(img)
     for y in range(HEIGHT):
         t = y / HEIGHT
-        r = int(top_r + (bot_r - top_r) * t)
-        g = int(top_g + (bot_g - top_g) * t)
-        b = int(top_b + (bot_b - top_b) * t)
-        draw.line([(0, y), (WIDTH, y)], fill=(r, g, b))
-    return base
+        draw.line([(0, y), (WIDTH, y)], fill=(
+            int(top[0] + (bot[0] - top[0]) * t),
+            int(top[1] + (bot[1] - top[1]) * t),
+            int(top[2] + (bot[2] - top[2]) * t),
+        ))
+    return img
 
 
-def _color_for_flags(flags: int) -> tuple:
-    if flags < 30:
-        return (46, 204, 113)
-    if flags <= 70:
-        return (241, 196, 15)
+def _center(draw, text, font, y, fill, max_w=None):
+    if max_w:
+        words, lines, cur = text.split(), [], ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= max_w:
+                cur = test
+            else:
+                if cur: lines.append(cur)
+                cur = w
+        if cur: lines.append(cur)
+        for ln in lines:
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            draw.text(((WIDTH - w) / 2, y), ln, font=font, fill=fill)
+            y += h + 10
+        return y
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((WIDTH - w) / 2, y), text, font=font, fill=fill)
+    return y + h + 20
+
+
+def _pct_color(v: int):
+    if v < 30: return (46, 204, 113)
+    if v <= 70: return (241, 196, 15)
     return (231, 76, 60)
 
 
-# ====================== СБОРКА ======================
-def create_card(data: Dict[str, str | int]) -> bytes:
-    img = _gradient_background()
-    draw = ImageDraw.Draw(img)
+def _draw_big_pct(draw, value: int, y: int):
+    pct = f"{value}%"
+    f = _font(200, bold=True)
+    bbox = draw.textbbox((0, 0), pct, font=f)
+    pw, ph = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((WIDTH - pw) / 2, y), pct, font=f, fill=_pct_color(value))
+    return y + ph + 20
 
-    # ---------- 1. ЛОГОТИП ----------
-    font_logo = _find_font(64, bold=True)
-    _draw_centered(draw, "TOXIC CHECK", font_logo, 70, NEON, anchor="mt")
 
-    # ---------- 2. ПРОЦЕНТ (baseline фиксирован) ----------
-    flags = int(data.get("flags", 0))
-    flag_color = _color_for_flags(flags)
-    percent_text = f"{flags}%"
-    font_percent = _find_font(200, bold=True)
-
-    percent_baseline = 520     # baseline цифр
-    _draw_centered(draw, percent_text, font_percent, percent_baseline, flag_color, anchor="ms")
-
-    # ---------- 3. КРАСНЫХ ФЛАГОВ — на 30px НИЖЕ baseline ----------
-    font_caption = _find_font(34)
-    caption_baseline = percent_baseline + 40
-    _draw_centered(draw, "КРАСНЫХ ФЛАГОВ", font_caption, caption_baseline, WHITE, anchor="ms")
-
-    # ---------- 4. ТОКСИК ----------
-    toxic_text = f"Токсик: {data.get('toxic', '—')}"
-    font_label = _fit_to_width(draw, toxic_text, MAX_TEXT_WIDTH, base_size=56, bold=True, min_size=32)
-    _draw_centered(draw, toxic_text, font_label, 780, WHITE, anchor="mt")
-
-    # ---------- 5. ТИП ----------
-    type_text = f"Тип: {data.get('type', '—')}"
-    font_type = _fit_to_width(draw, type_text, MAX_TEXT_WIDTH, base_size=56, bold=True, min_size=28)
-    _draw_centered(draw, type_text, font_type, 870, WHITE, anchor="mt")
-
-    # ---------- 6. СОВЕТ ----------
-    font_section = _find_font(30)
-    _draw_centered(draw, "СОВЕТ", font_section, 1070, NEON, anchor="mt")
-
-    advice = _truncate(str(data.get("advice", "")), 140)
-    font_advice, advice_lines = _fit_block(
-        draw, advice,
-        max_width=MAX_TEXT_WIDTH,
-        max_height=200,
-        base_size=42,
-        bold=False,
-        min_size=26,
-    )
-    _, advice_line_h = _measure(draw, "Ай", font_advice)
-    advice_line_h += 12
-    y = 1130
-    for line in advice_lines:
-        _draw_centered(draw, line, font_advice, y, WHITE, anchor="mt")
-        y += advice_line_h
-
-    # ---------- 7. ВЫВОД ----------
-    _draw_centered(draw, "ВЫВОД", font_section, 1400, NEON, anchor="mt")
-
-    verdict = _truncate(str(data.get("verdict", "")), 280)
-    font_verdict, verdict_lines = _fit_block(
-        draw, verdict,
-        max_width=MAX_TEXT_WIDTH,
-        max_height=380,
-        base_size=40,
-        bold=False,
-        min_size=24,
-    )
-    _, verdict_line_h = _measure(draw, "Ай", font_verdict)
-    verdict_line_h += 12
-    y = 1460
-    for line in verdict_lines:
-        _draw_centered(draw, line, font_verdict, y, WHITE, anchor="mt")
-        y += verdict_line_h
-
-    # ---------- 8. ПОДПИСЬ БОТА ----------
-    font_small = _find_font(28)
-    _draw_centered(draw, f"@{BOT_USERNAME}", font_small, HEIGHT - 70, GREY, anchor="mt")
-
+def _save(img) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
+
+
+def _signature(draw):
+    _center(draw, f"@{BOT_USERNAME}", _font(32), HEIGHT - 90, (160, 160, 160))
+
+
+# ─────────── ТОКСИК ───────────
+def _toxic(data: dict) -> bytes:
+    img = _gradient((10, 10, 10), (26, 0, 51))
+    d = ImageDraw.Draw(img)
+    neon = (0, 255, 204)
+    _center(d, "TOXIC CHECK", _font(70, True), 100, neon)
+    y = _draw_big_pct(d, int(data.get("flags", 0)), 480)
+    _center(d, "КРАСНЫХ ФЛАГОВ", _font(32), y, WHITE)
+
+    y = 900
+    _center(d, f"Токсик: {data.get('toxic', '—')}", _font(60, True), y, WHITE)
+    y += 100
+    _center(d, f"Тип: {data.get('type', '—')}", _font(60, True), y, WHITE)
+
+    y = 1200
+    _center(d, "СОВЕТ", _font(32), y, neon)
+    _center(d, str(data.get("advice", "")), _font(50), y + 60, WHITE, max_w=WIDTH - 120)
+
+    y = 1550
+    _center(d, "ВЫВОД", _font(32), y, neon)
+    _center(d, str(data.get("verdict", "")), _font(50), y + 60, WHITE, max_w=WIDTH - 120)
+
+    _signature(d)
+    return _save(img)
+
+
+# ─────────── КЕНТ ───────────
+def _kent(data: dict) -> bytes:
+    img = _gradient((15, 5, 0), (40, 10, 0))
+    d = ImageDraw.Draw(img)
+    acc = (255, 140, 0)
+    _center(d, "KENT CHECK", _font(80, True), 100, acc)
+    y = _draw_big_pct(d, int(data.get("kent_level", 0)), 380)
+    _center(d, "УРОВЕНЬ КЕНТА", _font(32), y, WHITE)
+
+    y = 850
+    _center(d, "ВЕРДИКТ", _font(32), y, acc)
+    _center(d, f"«{data.get('verdict', '—')}»", _font(50, True), y + 60, WHITE, max_w=WIDTH - 100)
+
+    y = 1100
+    _center(d, "ХАРАКТЕР", _font(32), y, acc)
+    _center(d, str(data.get("character", "")), _font(45), y + 60, WHITE, max_w=WIDTH - 100)
+
+    y = 1300
+    _center(d, "ПРОГНОЗ", _font(32), y, acc)
+    _center(d, str(data.get("prediction", "")), _font(45), y + 60, WHITE, max_w=WIDTH - 100)
+
+    y = 1550
+    _center(d, "СОВЕТ", _font(32), y, acc)
+    _center(d, str(data.get("advice", "")), _font(45), y + 60, WHITE, max_w=WIDTH - 100)
+
+    _signature(d)
+    return _save(img)
+
+
+# ─────────── ГАДАЛКА ───────────
+def _fortune(data: dict) -> bytes:
+    img = _gradient((5, 0, 20), (30, 10, 60))
+    d = ImageDraw.Draw(img)
+    gold = (255, 215, 0)
+    purple = (186, 85, 211)
+
+    _center(d, "FORTUNE", _font(80, True), 100, gold)
+    _center(d, "ТВОЁ ПРЕДСКАЗАНИЕ", _font(32), 220, purple)
+
+    y = 380
+    _center(d, f"«{data.get('prediction', '—')}»", _font(70, True), y, WHITE, max_w=WIDTH - 100)
+
+    y = 700
+    _center(d, "УДАЧА", _font(32), y, gold)
+    y = _draw_big_pct(d, int(data.get("luck", 0)), y + 60)
+
+    y = 1100
+    _center(d, "ЛЮБОВЬ", _font(40, True), y, purple)
+    _center(d, str(data.get("love", "")), _font(45), y + 70, WHITE, max_w=WIDTH - 120)
+
+    y = 1350
+    _center(d, "ДЕНЬГИ", _font(40, True), y, purple)
+    _center(d, str(data.get("money", "")), _font(45), y + 70, WHITE, max_w=WIDTH - 120)
+
+    y = 1600
+    _center(d, "СОВЕТ", _font(40, True), y, gold)
+    _center(d, str(data.get("advice", "")), _font(45), y + 70, WHITE, max_w=WIDTH - 120)
+
+    _signature(d)
+    return _save(img)
+
+
+# ─────────── МЕМ ───────────
+def _meme(data: dict) -> bytes:
+    img = _gradient((0, 0, 0), (20, 20, 20))
+    d = ImageDraw.Draw(img)
+
+    f = _font(90, bold=True)
+    top = str(data.get("top", "")).upper()
+    bbox = d.textbbox((0, 0), top, font=f)
+    tw = bbox[2] - bbox[0]
+    x = (WIDTH - tw) / 2
+    for dx in (-3, 0, 3):
+        for dy in (-3, 0, 3):
+            d.text((x + dx, 150 + dy), top, font=f, fill=(0, 0, 0))
+    d.text((x, 150), top, font=f, fill=WHITE)
+
+    emoji = _font(400)
+    _center(d, "😂", emoji, 700, WHITE)
+
+    bottom = str(data.get("bottom", "")).upper()
+    bbox = d.textbbox((0, 0), bottom, font=f)
+    tw = bbox[2] - bbox[0]
+    x = (WIDTH - tw) / 2
+    for dx in (-3, 0, 3):
+        for dy in (-3, 0, 3):
+            d.text((x + dx, 1350 + dy), bottom, font=f, fill=(0, 0, 0))
+    d.text((x, 1350), bottom, font=f, fill=WHITE)
+
+    _center(d, f"#{data.get('hashtag', 'мем')} • {data.get('genre', '')}", _font(36), 1650, (180, 180, 180))
+
+    _signature(d)
+    return _save(img)
+
+
+def create_card(data: dict, mode: str) -> bytes:
+    return {
+        "toxic": _toxic,
+        "kent": _kent,
+        "fortune": _fortune,
+        "meme": _meme,
+    }[mode](data)
