@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + категории + админка + защита + кнопка "В меню"
+# Мега-бот: 13 режимов + UX + админка + защита
 import asyncio
 import logging
 import os
@@ -104,6 +104,7 @@ def _main_menu_kb():
         [InlineKeyboardButton(text="🎲 Случайный анализ", callback_data="random_mode")],
         [InlineKeyboardButton(text="🏆 Топ недели", callback_data="top_week")],
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")],
+        [InlineKeyboardButton(text="❓ Помощь", callback_data="help")],
     ])
 
 def _cat_photo_kb():
@@ -153,15 +154,37 @@ def _share_kb(mode: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔗 Поделиться с другом", url=share_url)],
         [
-            InlineKeyboardButton(text="🎲 Ещё раз", callback_data="random_mode"),
+            InlineKeyboardButton(text="🔄 Поменять фото", callback_data=f"retry_{mode}"),
             InlineKeyboardButton(text="🏠 В меню", callback_data="back_main"),
         ],
+        [InlineKeyboardButton(text="🎲 Другой режим", callback_data="random_mode")],
     ])
 
 
 # ═══════════════════════════════════════════
-# ПРОВЕРКИ
+# ХЕЛПЕРЫ
 # ═══════════════════════════════════════════
+async def _get_limit_text(user_id: int) -> str:
+    """Возвращает строку про оставшиеся проверки."""
+    try:
+        used = await database.get_today_requests(user_id)
+        bonus = await database.get_bonus_today(user_id)
+        limit = config.DAILY_LIMIT + bonus
+        left = max(0, limit - used)
+        return f"⚡ <b>Осталось на сегодня: {left} из {limit}</b>"
+    except Exception:
+        return ""
+
+
+async def _safe_delete(msg: Message, delay: int = 10):
+    """Удаляет сообщение через N секунд."""
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
 async def _require_subscription(message_or_cb):
     is_sub = await monetization.is_subscribed(bot, message_or_cb.from_user.id)
     if not is_sub:
@@ -244,15 +267,57 @@ async def cmd_start(message: Message, state: FSMContext):
 
     ref_count = await database.get_referral_count(message.from_user.id)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
+    limit_text = await _get_limit_text(message.from_user.id)
 
     text = (
         "👋 <b>Добро пожаловать в Mega-Bot!</b>\n\n"
         f"{daily_text}"
+        f"{limit_text}\n\n"
         "Выбери категорию:\n\n"
         f"🎁 Приглашено: <b>{ref_count}</b> друзей (+1 проверка за каждого)\n"
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>"
     )
     await message.answer(text, reply_markup=_main_menu_kb())
+
+
+# ═══════════════════════════════════════════
+# HELP
+# ═══════════════════════════════════════════
+HELP_TEXT = (
+    "📖 <b>КАК ЭТО РАБОТАЕТ:</b>\n\n"
+    "1️⃣ Выбери режим из меню\n"
+    "2️⃣ Скинь нужное фото:\n"
+    "   • 🧪 Токсик-Чек → <b>скрин переписки</b>\n"
+    "   • 😎 Кент-Чек → <b>фото друга</b>\n"
+    "   • 📱 Возраст → <b>своё селфи</b>\n"
+    "   • ❤️ Отношения → <b>фото с партнёром</b>\n"
+    "3️⃣ Получи карточку за 5-10 сек\n"
+    "4️⃣ Поделись с другом\n\n"
+    f"⚡ <b>Лимит:</b> {config.DAILY_LIMIT} проверок/день\n"
+    "🎁 <b>За друга:</b> +1 проверка\n"
+    "🏆 <b>Топ недели:</b> соревнуйся с другими\n\n"
+    "❓ <b>Есть вопрос?</b> Напиши админу: /myref — узнать свою ссылку"
+)
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+    ]))
+
+
+@dp.callback_query(F.data == "help")
+async def cb_help(cb: CallbackQuery):
+    try:
+        await cb.message.edit_text(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    except TelegramAPIError:
+        await cb.message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    await cb.answer()
 
 
 # ═══════════════════════════════════════════
@@ -265,10 +330,12 @@ async def cb_back_main(cb: CallbackQuery):
         return
     if not await _require_subscription(cb):
         return
+    limit_text = await _get_limit_text(cb.from_user.id)
+    text = f"Выбери категорию:\n\n{limit_text}" if limit_text else "Выбери категорию:"
     try:
-        await cb.message.edit_text("Выбери категорию:", reply_markup=_main_menu_kb())
+        await cb.message.edit_text(text, reply_markup=_main_menu_kb())
     except TelegramAPIError:
-        await cb.message.answer("Выбери категорию:", reply_markup=_main_menu_kb())
+        await cb.message.answer(text, reply_markup=_main_menu_kb())
     await cb.answer()
 
 
@@ -346,6 +413,31 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await cb.answer("Рандом выбрал режим!", show_alert=False)
+
+
+@dp.callback_query(F.data.startswith("retry_"))
+async def cb_retry(cb: CallbackQuery, state: FSMContext):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
+    if not await _require_subscription(cb):
+        return
+    mode = cb.data.split("_", 1)[1]
+    if mode not in MODES:
+        await cb.answer("Неизвестный режим", show_alert=True)
+        return
+    await state.set_state(Mode.waiting_photo)
+    await state.update_data(mode=mode)
+    name = MODE_NAMES.get(mode, mode.upper())
+    hint = MODE_HINTS.get(mode, "Скинь фото 👇")
+    text = f"🔄 <b>{name}</b> — скинь новое фото\n\n{hint}"
+    try:
+        await cb.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+        ]))
+    except Exception:
+        pass
+    await cb.answer("Жду новое фото!")
 
 
 @dp.callback_query(F.data == "top_week")
@@ -574,7 +666,8 @@ async def cb_admin_backup(cb: CallbackQuery):
 async def handle_unsupported_content(message: Message):
     if not await _require_not_banned(message.from_user.id):
         return
-    await message.answer(WRONG_TYPE_MSG, reply_markup=_main_menu_kb())
+    msg = await message.answer(WRONG_TYPE_MSG, reply_markup=_main_menu_kb())
+    asyncio.create_task(_safe_delete(msg, 10))
 
 
 # ═══════════════════════════════════════════
@@ -597,7 +690,8 @@ async def handle_photo(message: Message, state: FSMContext):
         now = time.time()
         last = _user_last_request.get(user_id, 0)
         if now - last < 5:
-            await message.answer("⏳ Не так быстро! Подожди 5 секунд.")
+            msg = await message.answer("⏳ Не так быстро! Подожди 5 секунд.")
+            asyncio.create_task(_safe_delete(msg, 5))
             return
         _user_last_request[user_id] = now
 
