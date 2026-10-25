@@ -1,13 +1,14 @@
+# LLM-клиент (VseGPT, с сжатием и поддержкой 13 режимов)
 import base64
 import io
 import httpx
 from PIL import Image
 from config import LLM_API_KEY, LLM_API_URL, LLM_MODEL
-from prompts import MODES
+from prompts import MODES, PARSERS
 
 
 def _compress(image_bytes: bytes, max_side: int = 512, quality: int = 70) -> bytes:
-    """Сжимает фото для экономии токенов."""
+    """Сжимает картинку для экономии токенов."""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img.thumbnail((max_side, max_side), Image.LANCZOS)
@@ -24,8 +25,8 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
     if mode not in MODES:
         raise ValueError(f"Unknown mode: {mode}")
 
-    prompt = MODES[mode]["prompt"]
-    parser = MODES[mode]["parser"]
+    prompt = MODES[mode]           # ← теперь просто строка
+    parser = PARSERS[mode]          # ← парсер из отдельного словаря
 
     image_bytes = _compress(image_bytes)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -39,7 +40,7 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ],
         }],
-        "max_tokens": 300,
+        "max_tokens": 350,
         "temperature": 0.8,
     }
     headers = {
