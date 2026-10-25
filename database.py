@@ -1,4 +1,4 @@
-# База: юзеры, запросы, кэш, рефералка, статистика, бонусы
+# База: юзеры, запросы, кэш, рефералка, статистика, бонусы, баны
 import aiosqlite
 import hashlib
 import json
@@ -36,6 +36,16 @@ async def init_db():
                 mode TEXT,
                 result_json TEXT,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Таблица нарушений и банов
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS violations (
+                user_id INTEGER PRIMARY KEY,
+                violations_count INTEGER DEFAULT 0,
+                banned_until TIMESTAMP,
+                is_permanent BOOLEAN DEFAULT 0,
+                reason TEXT
             )
         """)
         await db.commit()
@@ -104,35 +114,28 @@ async def add_referral_bonus(user_id: int) -> bool:
 
 
 async def add_bonus(user_id: int, amount: int):
-    """Админская выдача бонусных попыток."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)) as cur:
             if not await cur.fetchone():
                 await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
-        
         async with db.execute("SELECT bonus_today, bonus_date FROM users WHERE user_id=?", (user_id,)) as cur:
             row = await cur.fetchone()
-        
         current_bonus = 0
         if row and row[1] == today:
             current_bonus = row[0] or 0
-            
         new_bonus = current_bonus + amount
         await db.execute("UPDATE users SET bonus_today=?, bonus_date=? WHERE user_id=?", (new_bonus, today, user_id))
         await db.commit()
 
 
 async def check_daily_bonus(user_id: int) -> bool:
-    """Проверяет, брал ли юзер бонус сегодня. Если нет — выдаёт +1 и возвращает True."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
             row = await cur.fetchone()
         if not row or row[0] != today:
-            # Выдаём бонус
             await db.execute("UPDATE users SET last_daily_bonus=? WHERE user_id=?", (today, user_id))
-            # Добавляем +1 к попыткам
             await db.execute(
                 "UPDATE users SET bonus_today = bonus_today + 1, bonus_date = ? WHERE user_id = ?",
                 (today, user_id)
@@ -199,7 +202,6 @@ async def get_referral_count(user_id: int) -> int:
 
 
 async def get_weekly_top() -> list:
-    """Топ-10 юзеров по активности за 7 дней. Возвращает только username/ID."""
     seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
@@ -217,37 +219,29 @@ async def get_weekly_top() -> list:
 # ─────────── СТАТИСТИКА ───────────
 async def get_full_stats() -> dict:
     today = date.today().isoformat()
-
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             total_users = (await cur.fetchone())[0]
-
         async with db.execute(
             "SELECT COUNT(*) FROM users WHERE DATE(first_seen) = ?", (today,)
         ) as cur:
             new_today = (await cur.fetchone())[0]
-
         async with db.execute(
             "SELECT COUNT(DISTINCT user_id) FROM requests WHERE date = ?", (today,)
         ) as cur:
             active_today = (await cur.fetchone())[0]
-
         async with db.execute(
             "SELECT COUNT(*) FROM requests WHERE date = ?", (today,)
         ) as cur:
             requests_today = (await cur.fetchone())[0]
-
         async with db.execute("SELECT COUNT(*) FROM requests") as cur:
             requests_total = (await cur.fetchone())[0]
-
         async with db.execute(
             "SELECT mode, COUNT(*) FROM requests GROUP BY mode"
         ) as cur:
             by_mode_rows = await cur.fetchall()
-
         async with db.execute("SELECT COUNT(*) FROM cache") as cur:
             cache_size = (await cur.fetchone())[0]
-
         async with db.execute("""
             SELECT u.username, u.user_id, COUNT(r.id) as cnt
             FROM users u
@@ -257,7 +251,6 @@ async def get_full_stats() -> dict:
             LIMIT 5
         """) as cur:
             top_users = await cur.fetchall()
-
         async with db.execute("""
             SELECT u.username, u.user_id, COUNT(u2.user_id) as refs
             FROM users u
@@ -267,7 +260,6 @@ async def get_full_stats() -> dict:
             LIMIT 5
         """) as cur:
             top_referrers = await cur.fetchall()
-
     return {
         "total_users": total_users,
         "new_today": new_today,
@@ -279,3 +271,85 @@ async def get_full_stats() -> dict:
         "top_users": top_users,
         "top_refs": top_referrers,
     }
+
+
+# ─────────── БАНЫ И НАРУШЕНИЯ ───────────
+async def get_ban_status(user_id: int) -> dict:
+    """Проверяет, забанен ли юзер."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT violations_count, banned_until, is_permanent FROM violations WHERE user_id=?",
+            (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return {"is_banned": False, "is_permanent": False, "violations": 0}
+    
+    count, banned_until, is_perm = row
+    if is_perm:
+        return {"is_banned": True, "is_permanent": True, "violations": count}
+    
+    if banned_until:
+        ban_dt = datetime.fromisoformat(banned_until)
+        if ban_dt > datetime.now():
+            remaining = int((ban_dt - datetime.now()).total_seconds() / 60)
+            return {"is_banned": True, "is_permanent": False, "violations": count, "remaining_min": remaining}
+    
+    return {"is_banned": False, "is_permanent": False, "violations": count}
+
+
+async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
+    """Добавляет нарушение и вычисляет, нужно ли банить."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT violations_count FROM violations WHERE user_id=?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        
+        count = (row[0] if row else 0) + 1
+        
+        if count >= 3:
+            # Пермабан
+            await db.execute("""
+                INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
+                VALUES (?, ?, NULL, 1, ?)
+            """, (user_id, count, reason))
+            await db.commit()
+            return {"action": "permanent_ban", "count": count}
+        elif count == 2:
+            # Бан на 30 минут
+            ban_until = (datetime.now() + timedelta(minutes=30)).isoformat()
+            await db.execute("""
+                INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
+                VALUES (?, ?, ?, 0, ?)
+            """, (user_id, count, ban_until, reason))
+            await db.commit()
+            return {"action": "temp_ban", "count": count, "minutes": 30}
+        else:
+            # Просто предупреждение
+            await db.execute("""
+                INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
+                VALUES (?, ?, NULL, 0, ?)
+            """, (user_id, count, reason))
+            await db.commit()
+            return {"action": "warning", "count": count}
+
+
+async def get_banned_users() -> list:
+    """Список всех забаненных (для админки)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT v.user_id, u.username, v.violations_count, v.banned_until, v.is_permanent, v.reason
+            FROM violations v
+            LEFT JOIN users u ON u.user_id = v.user_id
+            WHERE v.is_permanent = 1 OR (v.banned_until IS NOT NULL AND v.banned_until > ?)
+            ORDER BY v.is_permanent DESC, v.banned_until DESC
+        """, (datetime.now().isoformat(),)) as cur:
+            return await cur.fetchall()
+
+
+async def pardon_user(user_id: int):
+    """Разбан — удаляет запись из violations."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM violations WHERE user_id=?", (user_id,))
+        await db.commit()
