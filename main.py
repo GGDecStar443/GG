@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + UX + админка + защита
+# Мега-бот: 13 режимов + UX + админка + защита (ФИНАЛ)
 import asyncio
 import logging
 import os
@@ -64,6 +64,23 @@ MODE_HINTS = {
     "age": "Скинь <b>своё селфи</b> (лицо крупно) 👇",
     "crush": "Скинь <b>фото краша</b> 👇",
     "lonely": "Скинь <b>своё селфи</b> или фото комнаты 👇",
+}
+
+# Какое поле использовать как "score" для логов
+MODE_SCORE_FIELD = {
+    "toxic": "flags",
+    "kent": "kent_level",
+    "fortune": "luck",
+    "cringe": "cringe",
+    "flex": "flex",
+    "relationship": "compat",
+    "leader": "balance",
+    "age": "age",
+    "lonely": "lonely",
+    "psycho": None,
+    "aura": None,
+    "crush": None,
+    "meme": None,
 }
 
 WRONG_TYPE_MSG = (
@@ -165,7 +182,6 @@ def _share_kb(mode: str):
 # ХЕЛПЕРЫ
 # ═══════════════════════════════════════════
 async def _get_limit_text(user_id: int) -> str:
-    """Возвращает строку про оставшиеся проверки."""
     try:
         used = await database.get_today_requests(user_id)
         bonus = await database.get_bonus_today(user_id)
@@ -177,7 +193,6 @@ async def _get_limit_text(user_id: int) -> str:
 
 
 async def _safe_delete(msg: Message, delay: int = 10):
-    """Удаляет сообщение через N секунд."""
     await asyncio.sleep(delay)
     try:
         await msg.delete()
@@ -262,6 +277,7 @@ async def cmd_start(message: Message, state: FSMContext):
     if not await _require_subscription(message):
         return
 
+    # Ежедневный бонус
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
 
@@ -790,8 +806,14 @@ async def handle_photo(message: Message, state: FSMContext):
                 await wait.delete()
             except Exception:
                 pass
+            # ─── БЕЗОПАСНЫЙ score ───
             if not from_cache:
-                score = int(result.get("flags", result.get("compat", result.get("luck", 0))) or 0)
+                score_field = MODE_SCORE_FIELD.get(mode)
+                raw = result.get(score_field, 0) if score_field else 0
+                try:
+                    score = int(raw) if raw else 0
+                except (ValueError, TypeError):
+                    score = 0
                 await database.log_request(user_id, score, mode)
         except TelegramAPIError as e:
             log.exception("Send error: %s", e)
