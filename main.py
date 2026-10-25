@@ -1,4 +1,4 @@
-# Мега-бот: 4 режима + статистика + рефералка + кэш
+# Мега-бот: 4 режима + защита от всех типов контента
 import asyncio
 import logging
 import os
@@ -44,6 +44,12 @@ MODE_INFO = {
     "meme":    "😂 Мем-Генератор",
 }
 
+# Сообщение для неправильных типов контента
+WRONG_TYPE_MSG = (
+    "⚠️ <b>Я работаю только с картинками!</b>\n\n"
+    "Скинь <b>фото</b> (скрин переписки или селфи), а не видео / документ / музыку."
+)
+
 
 def _menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -67,6 +73,36 @@ async def _check_and_register(message: Message, referred_by: int = None):
             log.warning("Referral bonus failed: %s", e)
 
 
+# ═══════════════════════════════════════════
+# ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК ОШИБОК
+# ═══════════════════════════════════════════
+@dp.errors()
+async def global_error_handler(event):
+    """
+    Ловит ВСЕ необработанные ошибки.
+    Бот никогда не падает — юзер получает вежливое сообщение.
+    """
+    log.exception("Unhandled error: %s", event.exception)
+    
+    # Пытаемся ответить юзеру
+    update = event.update
+    try:
+        if update.message:
+            await update.message.answer(
+                "😅 Что-то пошло не так. Попробуй ещё раз или выбери режим заново:",
+                reply_markup=_menu_kb()
+            )
+        elif update.callback_query:
+            await update.callback_query.answer("Ошибка. Попробуй ещё раз.", show_alert=True)
+    except Exception as e:
+        log.error("Failed to send error message: %s", e)
+    
+    return True  # Ошибка обработана
+
+
+# ═══════════════════════════════════════════
+# СТАРТ
+# ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -201,7 +237,7 @@ async def cmd_stats(message: Message):
 
     top_ref_text = "\n".join(
         f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
-        for i, u in enumerate(s["top_referrers"])
+        for i, u in enumerate(s["top_refs"])
     ) or "  —"
 
     text = (
@@ -215,126 +251,172 @@ async def cmd_stats(message: Message):
         f"<b>По режимам:</b>\n{modes_text}\n\n"
         f"<b>ТОП-5 активных:</b>\n{top_users_text}\n\n"
         f"<b>ТОП-5 рефереров:</b>\n{top_ref_text}\n\n"
-        f"💰 Расход: <b>~{est_cost:.1f}₽</b>\n"
-        f"<i>(~0.08₽/запрос)</i>"
+        f"💰 Расход: <b>~{est_cost:.1f}₽</b> <i>(~0.08₽/запрос)</i>"
     )
     await message.answer(text)
 
 
+# ═══════════════════════════════════════════
+# ЗАЩИТА: ОТВЕЧАЕМ НА ВСЕ ДРУГИЕ ТИПЫ КОНТЕНТА
+# ═══════════════════════════════════════════
+@dp.message(F.video | F.document | F.audio | F.voice | F.video_note | F.sticker | F.animation | F.contact | F.location | F.poll)
+async def handle_unsupported_content(message: Message):
+    """Ловит видео, документы, музыку, стикеры, гифки, голосовые и т.д."""
+    await message.answer(WRONG_TYPE_MSG, reply_markup=_menu_kb())
+
+
+# ═══════════════════════════════════════════
+# ОСНОВНОЙ ОБРАБОТЧИК ФОТО
+# ═══════════════════════════════════════════
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
-    if not await monetization.is_subscribed(bot, message.from_user.id):
-        await message.answer("👋 Сначала подпишись на канал.", reply_markup=monetization.subscribe_kb())
-        return
-
-    current = await state.get_state()
-    mode = None
-    for name in MODE_INFO:
-        if current == getattr(Mode, name).state:
-            mode = name
-            break
-
-    if not mode:
-        await message.answer("Сначала выбери режим:", reply_markup=_menu_kb())
-        return
-
-    if not await database.can_make_request(message.from_user.id, config.DAILY_LIMIT):
-        ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
-        await message.answer(
-            "🚫 Лимит на сегодня исчерпан.\n\n"
-            f"🎁 Пригласи друга и получи +{config.REFERRAL_BONUS} проверку:\n"
-            f"<code>{ref_link}</code>"
-        )
-        return
-
-    tmp = None
     try:
-        photo = message.photo[-1]
-        file = await bot.get_file(photo.file_id)
-        fd, tmp = tempfile.mkstemp(suffix=".jpg")
-        os.close(fd)
-        await bot.download_file(file.file_path, destination=tmp)
-        with open(tmp, "rb") as f:
-            image_bytes = f.read()
-    except Exception as e:
-        log.exception("Download error: %s", e)
-        await message.answer("Не смог скачать фото.")
-        if tmp and os.path.exists(tmp): os.remove(tmp)
-        return
+        # Проверка подписки
+        if not await monetization.is_subscribed(bot, message.from_user.id):
+            await message.answer("👋 Сначала подпишись на канал.", reply_markup=monetization.subscribe_kb())
+            return
 
-    wait = await message.answer("🔍 Анализирую…")
+        # Определение режима
+        current = await state.get_state()
+        mode = None
+        for name in MODE_INFO:
+            if current == getattr(Mode, name).state:
+                mode = name
+                break
 
-    result = await database.get_cached(image_bytes, mode)
-    from_cache = result is not None
+        if not mode:
+            await message.answer("Сначала выбери режим:", reply_markup=_menu_kb())
+            return
 
-    if not from_cache:
+        # Проверка лимита
+        if not await database.can_make_request(message.from_user.id, config.DAILY_LIMIT):
+            ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
+            await message.answer(
+                "🚫 Лимит на сегодня исчерпан.\n\n"
+                f"🎁 Пригласи друга и получи +{config.REFERRAL_BONUS} проверку:\n"
+                f"<code>{ref_link}</code>"
+            )
+            return
+
+        # Скачивание фото (с защитой)
+        tmp = None
         try:
-            result = await llm_client.analyze(image_bytes, mode=mode)
-            await database.save_cache(image_bytes, mode, result)
+            photo = message.photo[-1]
+            
+            # Проверка размера (Telegram и так не даст >20MB, но на всякий)
+            if photo.file_size and photo.file_size > 20 * 1024 * 1024:
+                await message.answer("❌ Фото слишком большое (>20 МБ). Скинь поменьше.")
+                return
+            
+            file = await bot.get_file(photo.file_id)
+            fd, tmp = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            await bot.download_file(file.file_path, destination=tmp)
+            
+            with open(tmp, "rb") as f:
+                image_bytes = f.read()
+                
+            if not image_bytes:
+                await message.answer("❌ Фото пустое. Попробуй другое.")
+                if tmp and os.path.exists(tmp): os.remove(tmp)
+                return
+                
         except Exception as e:
-            log.exception("LLM error: %s", e)
-            await wait.edit_text("😴 Бот устал, попробуй через минуту.")
+            log.exception("Download error: %s", e)
+            await message.answer("❌ Не смог скачать фото. Попробуй ещё раз.")
             if tmp and os.path.exists(tmp): os.remove(tmp)
             return
 
-    try:
-        card_bytes = card_generator.create_card(result, mode=mode)
-    except Exception as e:
-        log.exception("Card error: %s", e)
-        await wait.edit_text("Не смог собрать карточку.")
-        if tmp and os.path.exists(tmp): os.remove(tmp)
-        return
+        wait = await message.answer("🔍 Анализирую…")
 
-    if mode == "toxic":
-        caption = (f"🧪 <b>Токсик-Чек</b>\n\n"
-                   f"🚩 Флаги: <b>{result['flags']}%</b>\n"
-                   f"👤 Токсик: <b>{result['toxic']}</b>\n"
-                   f"💔 Тип: <b>{result['type']}</b>\n\n"
-                   f"💬 <b>Совет:</b> {result['advice']}\n\n"
-                   f"📝 {result['verdict']}")
-        score = int(result.get("flags", 0))
-    elif mode == "kent":
-        caption = (f"😎 <b>Кент-Чек</b>\n\n"
-                   f"🔥 Уровень: <b>{result['kent_level']}%</b>\n"
-                   f"💬 Вердикт: <b>«{result['verdict']}»</b>\n"
-                   f"🧠 Характер: <b>{result['character']}</b>\n\n"
-                   f"🔮 <b>Прогноз:</b> {result['prediction']}\n\n"
-                   f"💡 <b>Совет:</b> {result['advice']}")
-        score = int(result.get("kent_level", 0))
-    elif mode == "fortune":
-        caption = (f"🔮 <b>Гадалка</b>\n\n"
-                   f"✨ Предсказание: <b>«{result['prediction']}»</b>\n"
-                   f"🍀 Удача: <b>{result['luck']}%</b>\n\n"
-                   f"💕 <b>Любовь:</b> {result['love']}\n"
-                   f"💰 <b>Деньги:</b> {result['money']}\n\n"
-                   f"✨ <b>Совет:</b> {result['advice']}")
-        score = int(result.get("luck", 0))
-    else:
-        caption = (f"😂 <b>Мем-Генератор</b>\n\n"
-                   f"⬆️ {result['top']}\n"
-                   f"⬇️ {result['bottom']}\n\n"
-                   f"#{result['hashtag']} • {result['genre']}")
-        score = 0
+        # Кэш
+        result = await database.get_cached(image_bytes, mode)
+        from_cache = result is not None
 
-    try:
-        pf = BufferedInputFile(card_bytes, filename=f"{mode}.png")
-        await message.answer_photo(photo=pf, caption=caption)
-        await wait.delete()
-    except TelegramAPIError as e:
-        log.exception("Send error: %s", e)
-        await wait.edit_text("Не смог отправить результат.")
+        if not from_cache:
+            try:
+                result = await llm_client.analyze(image_bytes, mode=mode)
+                await database.save_cache(image_bytes, mode, result)
+            except Exception as e:
+                log.exception("LLM error: %s", e)
+                await wait.edit_text("😴 Бот устал, попробуй через минуту.")
+                if tmp and os.path.exists(tmp): os.remove(tmp)
+                return
 
-    if not from_cache:
+        # Генерация карточки
         try:
-            await database.log_request(message.from_user.id, score, mode)
+            card_bytes = card_generator.create_card(result, mode=mode)
         except Exception as e:
-            log.exception("DB log error: %s", e)
+            log.exception("Card error: %s", e)
+            await wait.edit_text("Не смог собрать карточку.")
+            if tmp and os.path.exists(tmp): os.remove(tmp)
+            return
 
-    if tmp and os.path.exists(tmp):
-        try: os.remove(tmp)
-        except OSError: pass
+        # Формирование caption
+        if mode == "toxic":
+            caption = (f"🧪 <b>Токсик-Чек</b>\n\n"
+                       f"🚩 Флаги: <b>{result['flags']}%</b>\n"
+                       f"👤 Токсик: <b>{result['toxic']}</b>\n"
+                       f"💔 Тип: <b>{result['type']}</b>\n\n"
+                       f"💬 <b>Совет:</b> {result['advice']}\n\n"
+                       f"📝 {result['verdict']}")
+            score = int(result.get("flags", 0))
+        elif mode == "kent":
+            caption = (f"😎 <b>Кент-Чек</b>\n\n"
+                       f"🔥 Уровень: <b>{result['kent_level']}%</b>\n"
+                       f"💬 Вердикт: <b>«{result['verdict']}»</b>\n"
+                       f"🧠 Характер: <b>{result['character']}</b>\n\n"
+                       f"🔮 <b>Прогноз:</b> {result['prediction']}\n\n"
+                       f"💡 <b>Совет:</b> {result['advice']}")
+            score = int(result.get("kent_level", 0))
+        elif mode == "fortune":
+            caption = (f"🔮 <b>Гадалка</b>\n\n"
+                       f"✨ Предсказание: <b>«{result['prediction']}»</b>\n"
+                       f"🍀 Удача: <b>{result['luck']}%</b>\n\n"
+                       f"💕 <b>Любовь:</b> {result['love']}\n"
+                       f"💰 <b>Деньги:</b> {result['money']}\n\n"
+                       f"✨ <b>Совет:</b> {result['advice']}")
+            score = int(result.get("luck", 0))
+        else:
+            caption = (f"😂 <b>Мем-Генератор</b>\n\n"
+                       f"⬆️ {result['top']}\n"
+                       f"⬇️ {result['bottom']}\n\n"
+                       f"#{result['hashtag']} • {result['genre']}")
+            score = 0
+
+        # Отправка
+        try:
+            pf = BufferedInputFile(card_bytes, filename=f"{mode}.png")
+            await message.answer_photo(photo=pf, caption=caption)
+            await wait.delete()
+        except TelegramAPIError as e:
+            log.exception("Send error: %s", e)
+            await wait.edit_text("Не смог отправить результат.")
+
+        # Логирование
+        if not from_cache:
+            try:
+                await database.log_request(message.from_user.id, score, mode)
+            except Exception as e:
+                log.exception("DB log error: %s", e)
+
+    except Exception as e:
+        # Финальная защита — если что-то упало, юзер получит ответ, а не "тишину"
+        log.exception("Unhandled error in handle_photo: %s", e)
+        try:
+            await message.answer("😅 Что-то пошло не так. Попробуй ещё раз.")
+        except Exception:
+            pass
+    finally:
+        # Гарантированная очистка временного файла
+        if tmp and os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
 
 
+# ═══════════════════════════════════════════
+# ОБРАБОТЧИК ЛЮБОГО ТЕКСТА (в самом конце)
+# ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     await message.answer("Выбери режим:", reply_markup=_menu_kb())
