@@ -1,4 +1,3 @@
-# LLM-клиент с агрессивным сжатием (экономия до 50%)
 import base64
 import io
 import httpx
@@ -8,11 +7,7 @@ from prompts import MODES
 
 
 def _compress(image_bytes: bytes, max_side: int = 512, quality: int = 70) -> bytes:
-    """
-    Сжимает картинку до 512px, quality 70.
-    Экономия входных токенов в 3-4 раза по сравнению с оригиналом.
-    Для скринов переписки текст читается идеально.
-    """
+    """Сжимает фото для экономии токенов."""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img.thumbnail((max_side, max_side), Image.LANCZOS)
