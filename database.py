@@ -2,11 +2,20 @@
 import aiosqlite
 import hashlib
 import json
+import os
 from datetime import date, datetime, timedelta
 from config import DB_PATH, REFERRAL_BONUS, REFERRAL_DAILY_LIMIT
 
 
 async def init_db():
+    # Создаём папку для базы, если её нет (критично для /data)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[DB] Не смог создать папку {db_dir}: {e}")
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -38,7 +47,6 @@ async def init_db():
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Таблица нарушений и банов
         await db.execute("""
             CREATE TABLE IF NOT EXISTS violations (
                 user_id INTEGER PRIMARY KEY,
@@ -48,7 +56,28 @@ async def init_db():
                 reason TEXT
             )
         """)
+        # Миграция старых баз
+        await _migrate_users_table(db)
         await db.commit()
+
+
+async def _migrate_users_table(db):
+    """Добавляет колонки в users, если их нет (для старых баз)."""
+    async with db.execute("PRAGMA table_info(users)") as cur:
+        columns = [row[1] for row in await cur.fetchall()]
+    migrations = {
+        "referred_by": "ALTER TABLE users ADD COLUMN referred_by INTEGER",
+        "bonus_today": "ALTER TABLE users ADD COLUMN bonus_today INTEGER DEFAULT 0",
+        "bonus_date": "ALTER TABLE users ADD COLUMN bonus_date DATE",
+        "last_daily_bonus": "ALTER TABLE users ADD COLUMN last_daily_bonus DATE",
+        "points": "ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 0",
+    }
+    for col, sql in migrations.items():
+        if col not in columns:
+            try:
+                await db.execute(sql)
+            except Exception:
+                pass
 
 
 async def register_user(user_id: int, username, referred_by=None):
@@ -273,9 +302,8 @@ async def get_full_stats() -> dict:
     }
 
 
-# ─────────── БАНЫ И НАРУШЕНИЯ ───────────
+# ─────────── БАНЫ ───────────
 async def get_ban_status(user_id: int) -> dict:
-    """Проверяет, забанен ли юзер."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT violations_count, banned_until, is_permanent FROM violations WHERE user_id=?",
@@ -284,32 +312,28 @@ async def get_ban_status(user_id: int) -> dict:
             row = await cur.fetchone()
     if not row:
         return {"is_banned": False, "is_permanent": False, "violations": 0}
-    
     count, banned_until, is_perm = row
     if is_perm:
         return {"is_banned": True, "is_permanent": True, "violations": count}
-    
     if banned_until:
-        ban_dt = datetime.fromisoformat(banned_until)
-        if ban_dt > datetime.now():
-            remaining = int((ban_dt - datetime.now()).total_seconds() / 60)
-            return {"is_banned": True, "is_permanent": False, "violations": count, "remaining_min": remaining}
-    
+        try:
+            ban_dt = datetime.fromisoformat(banned_until)
+            if ban_dt > datetime.now():
+                remaining = int((ban_dt - datetime.now()).total_seconds() / 60)
+                return {"is_banned": True, "is_permanent": False, "violations": count, "remaining_min": remaining}
+        except Exception:
+            pass
     return {"is_banned": False, "is_permanent": False, "violations": count}
 
 
 async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
-    """Добавляет нарушение и вычисляет, нужно ли банить."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT violations_count FROM violations WHERE user_id=?", (user_id,)
         ) as cur:
             row = await cur.fetchone()
-        
         count = (row[0] if row else 0) + 1
-        
         if count >= 3:
-            # Пермабан
             await db.execute("""
                 INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
                 VALUES (?, ?, NULL, 1, ?)
@@ -317,7 +341,6 @@ async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
             await db.commit()
             return {"action": "permanent_ban", "count": count}
         elif count == 2:
-            # Бан на 30 минут
             ban_until = (datetime.now() + timedelta(minutes=30)).isoformat()
             await db.execute("""
                 INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
@@ -326,7 +349,6 @@ async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
             await db.commit()
             return {"action": "temp_ban", "count": count, "minutes": 30}
         else:
-            # Просто предупреждение
             await db.execute("""
                 INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason)
                 VALUES (?, ?, NULL, 0, ?)
@@ -336,7 +358,6 @@ async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
 
 
 async def get_banned_users() -> list:
-    """Список всех забаненных (для админки)."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
             SELECT v.user_id, u.username, v.violations_count, v.banned_until, v.is_permanent, v.reason
@@ -349,7 +370,6 @@ async def get_banned_users() -> list:
 
 
 async def pardon_user(user_id: int):
-    """Разбан — удаляет запись из violations."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM violations WHERE user_id=?", (user_id,))
         await db.commit()
