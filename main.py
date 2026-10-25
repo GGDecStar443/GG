@@ -66,7 +66,6 @@ MODE_HINTS = {
     "lonely": "Скинь <b>своё селфи</b> или фото комнаты 👇",
 }
 
-# Какое поле использовать как "score" для логов
 MODE_SCORE_FIELD = {
     "toxic": "flags",
     "kent": "kent_level",
@@ -110,7 +109,7 @@ def _is_spam_text(text: str) -> bool:
 
 
 # ═══════════════════════════════════════════
-# ПРИВАТНОСТЬ И ЮРИДИКА
+# ПРИВАТНОСТЬ И ЮРИДИКА (убрали 4-й пункт)
 # ═══════════════════════════════════════════
 PRIVACY_TEXT = (
     "📄 <b>Политика конфиденциальности и правила</b>\n\n"
@@ -127,10 +126,7 @@ PRIVACY_TEXT = (
     "• <b>Скрывайте личные данные</b> на скриншотах (номера телефонов, адреса, ФИО, номера карт)\n"
     "• Бот использует AI для анализа — ответы <b>не являются</b> медицинской или психологической консультацией\n"
     "• Все результаты — <b>шутливые</b> и не несут юридической силы\n\n"
-    "4️⃣ <b>Ваши права:</b>\n"
-    "• Вы можете запросить удаление данных\n"
-    f"• Написать админу: {config.ADMIN_URL}\n\n"
-    "5️⃣ <b>Согласие:</b>\n"
+    "4️⃣ <b>Согласие:</b>\n"
     "• Нажмите «✅ Согласен», чтобы продолжить\n"
     "• Если не согласны — покиньте бота\n\n"
     f"📅 Дата: 2026 г.\n"
@@ -280,7 +276,7 @@ async def global_error_handler(event):
 
 
 # ═══════════════════════════════════════════
-# СТАРТ (с согласием на политику)
+# СТАРТ
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -294,7 +290,6 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
         return
 
-    # Проверяем, согласился ли юзер с политикой
     accepted = await database.is_privacy_accepted(message.from_user.id)
     if not accepted:
         await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
@@ -548,13 +543,17 @@ async def cb_top_week(cb: CallbackQuery):
     else:
         lines = []
         for i, (username, user_id, cnt) in enumerate(top, 1):
-            # Показываем ТОЛЬКО ник (или "Аноним" если ника нет)
+            # ТОЛЬКО ТЕКСТ, без @ и без ссылок
             if username and username.strip():
-                name = f"@{username}"
+                name = username.strip()
             else:
                 name = "Аноним"
             lines.append(f"  {i}. <b>{name}</b> — {cnt} проверок")
-        text = "🏆 <b>Топ-10 недели:</b>\n\n" + "\n".join(lines) + "\n\n<i>Проверок за последние 7 дней</i>"
+        text = (
+            "🏆 <b>Топ-10 недели:</b>\n\n"
+            + "\n".join(lines)
+            + "\n\n<i>Проверок за последние 7 дней</i>"
+        )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
@@ -659,8 +658,9 @@ async def cb_admin_stats(cb: CallbackQuery):
             f"  {MODE_NAMES.get(m, m)}: <b>{c}</b>"
             for m, c in sorted(s["by_mode"].items(), key=lambda x: -x[1])
         ) or "  —"
+        # БЕЗ @ и без ссылок
         top_users_text = "\n".join(
-            f"  {i+1}. @{u[0] if u[0] else 'Аноним'} — {u[2]}"
+            f"  {i+1}. {u[0] if u[0] else 'Аноним'} — {u[2]}"
             for i, u in enumerate(s["top_users"])
         ) or "  —"
         text = (
@@ -770,7 +770,7 @@ async def handle_unsupported_content(message: Message):
 
 
 # ═══════════════════════════════════════════
-# ОБРАБОТЧИК ФОТО (с фиксом "токсик не забирает")
+# ОБРАБОТЧИК ФОТО
 # ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
@@ -890,7 +890,7 @@ async def handle_photo(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-            # ─── БЕЗОПАСНЫЙ score + проверка на "не списывать если 0" ───
+            # Безопасный score + "не списывать если 0"
             if not from_cache:
                 score_field = MODE_SCORE_FIELD.get(mode)
                 raw = result.get(score_field, 0) if score_field else 0
@@ -898,14 +898,11 @@ async def handle_photo(message: Message, state: FSMContext):
                     score = int(raw) if raw else 0
                 except (ValueError, TypeError):
                     score = 0
-                
-                # Логика "не забирать проверку":
-                # - Для токсика: если flags == 0 → не логируем (не тратим)
-                # - Для остальных: логируем всегда
+
                 should_log = True
                 if mode == "toxic" and score == 0:
                     should_log = False
-                
+
                 if should_log:
                     await database.log_request(user_id, score, mode)
                 else:
@@ -914,7 +911,6 @@ async def handle_photo(message: Message, state: FSMContext):
                         "поэтому <b>проверка НЕ была списана</b>.\n\n"
                         "Попробуй скинуть более чёткий скрин."
                     )
-
         except TelegramAPIError as e:
             log.exception("Send error: %s", e)
             try:
