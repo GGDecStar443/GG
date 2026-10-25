@@ -1,4 +1,4 @@
-# LLM-клиент (VseGPT, сжатие в потоке, семафор на 20 запросов)
+# LLM-клиент: сжатие по режимам, семафор, стабильная температура
 import base64
 import io
 import asyncio
@@ -7,16 +7,30 @@ from PIL import Image
 from config import LLM_API_KEY, LLM_API_URL, LLM_MODEL
 from prompts import MODES, PARSERS
 
-# Семафор — не более 20 одновременных запросов к VseGPT
 _api_semaphore = asyncio.Semaphore(20)
 
 
-def _compress_sync(image_bytes: bytes, max_side: int = 384, quality: int = 65) -> bytes:
+def _compress_sync(image_bytes: bytes, mode: str = "toxic") -> bytes:
+    """
+    Сжимает картинку:
+    - Переписки/посты (toxic, leader, flex) → 600px (текст читается)
+    - Селфи и мемы → 512px (можно агрессивнее)
+    """
     try:
         img = Image.open(io.BytesIO(image_bytes))
+        
+        if mode in ("toxic", "leader", "flex"):
+            max_side = 600
+            quality = 70
+        else:
+            max_side = 512
+            quality = 70
+        
         img.thumbnail((max_side, max_side), Image.BILINEAR)
+        
         if img.mode != "RGB":
             img = img.convert("RGB")
+        
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=quality, optimize=False)
         return buf.getvalue()
@@ -31,7 +45,8 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
     prompt = MODES[mode]
     parser = PARSERS[mode]
 
-    image_bytes = await asyncio.to_thread(_compress_sync, image_bytes)
+    # Сжатие в потоке с учётом режима
+    image_bytes = await asyncio.to_thread(_compress_sync, image_bytes, mode)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
@@ -43,7 +58,7 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ],
         }],
-        "max_tokens": 250,
+        "max_tokens": 300,
         "temperature": 0.4,
     }
     headers = {
@@ -51,7 +66,6 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
         "Content-Type": "application/json",
     }
 
-    # Семафор — не больше 20 одновременных запросов
     async with _api_semaphore:
         async with httpx.AsyncClient(timeout=45) as client:
             resp = await client.post(LLM_API_URL, json=payload, headers=headers)
