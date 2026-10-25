@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + категории + админка + backup + защита
+# Мега-бот: 13 режимов + категории + админка + защита (ФИКСЫ)
 import asyncio
 import logging
 import os
@@ -48,6 +48,22 @@ MODE_NAMES = {
     "psycho": "🕵️ Психопрофиль", "aura": "🔮 Узнать ауру",
     "leader": "⚖️ Кто главный", "age": "📱 Возраст по лицу",
     "crush": "🎯 Тип краша", "lonely": "💀 Уровень одиночества",
+}
+
+MODE_HINTS = {
+    "toxic": "Скинь <b>скрин переписки</b> с человеком 👇",
+    "kent": "Скинь <b>фото кента</b> (или своё) 👇",
+    "fortune": "Скинь <b>любое фото</b> — погадаю 👇",
+    "meme": "Скинь <b>любое фото</b> — сделаю мем 👇",
+    "relationship": "Скинь <b>фото с партнёром</b> 👇",
+    "cringe": "Скинь <b>своё селфи</b> (или скрин профиля) 👇",
+    "flex": "Скинь <b>скрин поста</b> из соцсетей 👇",
+    "psycho": "Скинь <b>своё селфи</b> 👇",
+    "aura": "Скинь <b>любое фото</b> — определю ауру 👇",
+    "leader": "Скинь <b>скрин переписки</b> 👇",
+    "age": "Скинь <b>своё селфи</b> (лицо крупно) 👇",
+    "crush": "Скинь <b>фото краша</b> 👇",
+    "lonely": "Скинь <b>своё селфи</b> или фото комнаты 👇",
 }
 
 WRONG_TYPE_MSG = (
@@ -261,14 +277,25 @@ async def cb_category(cb: CallbackQuery):
     if not await _require_subscription(cb):
         return
     cat = cb.data.split("_", 1)[1]
-    if cat == "photo":
-        await cb.message.edit_text("📸 <b>Анализ фото:</b>", reply_markup=_cat_photo_kb())
-    elif cat == "love":
-        await cb.message.edit_text("❤️ <b>Отношения:</b>", reply_markup=_cat_love_kb())
-    elif cat == "mystic":
-        await cb.message.edit_text("🔮 <b>Мистика:</b>", reply_markup=_cat_mystic_kb())
-    elif cat == "meme":
-        await cb.message.edit_text("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
+    try:
+        if cat == "photo":
+            await cb.message.edit_text("📸 <b>Анализ фото:</b>", reply_markup=_cat_photo_kb())
+        elif cat == "love":
+            await cb.message.edit_text("❤️ <b>Отношения:</b>", reply_markup=_cat_love_kb())
+        elif cat == "mystic":
+            await cb.message.edit_text("🔮 <b>Мистика:</b>", reply_markup=_cat_mystic_kb())
+        elif cat == "meme":
+            await cb.message.edit_text("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
+    except TelegramAPIError:
+        # Если не текст — отправляем новое
+        if cat == "photo":
+            await cb.message.answer("📸 <b>Анализ фото:</b>", reply_markup=_cat_photo_kb())
+        elif cat == "love":
+            await cb.message.answer("❤️ <b>Отношения:</b>", reply_markup=_cat_love_kb())
+        elif cat == "mystic":
+            await cb.message.answer("🔮 <b>Мистика:</b>", reply_markup=_cat_mystic_kb())
+        elif cat == "meme":
+            await cb.message.answer("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
     await cb.answer()
 
 
@@ -286,12 +313,13 @@ async def cb_invite(cb: CallbackQuery):
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
         f"За каждого друга: +1 проверка (макс +{config.REFERRAL_DAILY_LIMIT}/день)"
     )
-    await cb.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
-        ]),
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except TelegramAPIError:
+        await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
 
@@ -306,12 +334,16 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
     await state.set_state(Mode.waiting_photo)
     await state.update_data(mode=mode)
     name = MODE_NAMES.get(mode, mode.upper())
-    await cb.message.edit_text(
-        f"🎲 Выпал режим: <b>{name}</b>\n\nСкинь фото 👇",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
-        ]),
-    )
+    hint = MODE_HINTS.get(mode, "Скинь фото 👇")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+    text = f"🎲 Выпал режим: <b>{name}</b>\n\n{hint}"
+    # ВСЕГДА отправляем новое — потому что старое может быть фото
+    try:
+        await cb.message.answer(text, reply_markup=kb)
+    except Exception:
+        pass
     await cb.answer("Рандом выбрал режим!", show_alert=False)
 
 
@@ -331,12 +363,13 @@ async def cb_top_week(cb: CallbackQuery):
             name = f"@{username}" if username else f"User#{user_id}"
             lines.append(f"  {i}. <b>{name}</b> — {cnt} проверок")
         text = "🏆 <b>Топ-10 недели:</b>\n\n" + "\n".join(lines) + "\n\n<i>Проверок за последние 7 дней</i>"
-    await cb.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
-        ]),
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except TelegramAPIError:
+        await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
 
@@ -354,12 +387,15 @@ async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
     await state.set_state(Mode.waiting_photo)
     await state.update_data(mode=mode)
     name = MODE_NAMES.get(mode, mode.upper())
-    await cb.message.edit_text(
-        f"Режим: <b>{name}</b>\n\nСкинь фото 👇",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
-        ]),
-    )
+    hint = MODE_HINTS.get(mode, "Скинь фото 👇")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+    text = f"Режим: <b>{name}</b>\n\n{hint}"
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except TelegramAPIError:
+        await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
 
@@ -557,7 +593,6 @@ async def handle_photo(message: Message, state: FSMContext):
                 await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
             return
 
-        # Anti-flood
         now = time.time()
         last = _user_last_request.get(user_id, 0)
         if now - last < 5:
@@ -583,7 +618,6 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.answer("Режим потерян. Нажми /start")
             return
 
-        # Скачивание
         try:
             photo = message.photo[-1]
             if photo.file_size and photo.file_size > 20 * 1024 * 1024:
@@ -688,7 +722,7 @@ async def handle_photo(message: Message, state: FSMContext):
 
 
 # ═══════════════════════════════════════════
-# ТЕКСТ (детектор мата)
+# ТЕКСТ
 # ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
