@@ -3,30 +3,45 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Telegram
+# ─── Telegram ───
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME: str = os.getenv("BOT_USERNAME", "your_bot_username")
+ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
 
-# LLM — дешёвая модель для экономии (gemini-flash-1.5 в 2-3 раза дешевле claude-haiku)
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-LLM_API_URL: str = os.getenv("LLM_API_URL", "https://api.vsegpt.ru/v1/chat/completions")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "google/gemini-flash-1.5")
+# ─── LLM (VseGPT) ───
+# Поддерживаем ОБА имени переменных (LLM_* и старое GROQ_*)
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
+LLM_API_URL: str = (
+    os.getenv("LLM_API_URL", "")
+    or os.getenv("GROQ_API_URL", "")
+    or "https://api.vsegpt.ru/v1/chat/completions"
+)
+# ВАЖНО: vis- префикс обязателен для vision-моделей.
+# Claude Haiku — самый дешёвый из доступных на VseGPT.
+LLM_MODEL: str = (
+    os.getenv("LLM_MODEL", "")
+    or os.getenv("GROQ_MODEL", "")
+    or "vis-anthropic/claude-haiku-5.5"
+)
 
-# Лимиты
+# ─── Лимиты ───
 DAILY_LIMIT: int = int(os.getenv("DAILY_LIMIT", "5"))
 
-# Рефералка
-REFERRAL_BONUS: int = int(os.getenv("REFERRAL_BONUS", "1"))          # +1 за друга
-REFERRAL_DAILY_LIMIT: int = int(os.getenv("REFERRAL_DAILY_LIMIT", "10"))  # макс +10/день
+# ─── Рефералка ───
+REFERRAL_BONUS: int = int(os.getenv("REFERRAL_BONUS", "1"))
+REFERRAL_DAILY_LIMIT: int = int(os.getenv("REFERRAL_DAILY_LIMIT", "10"))
 
-# Монетизация — канал для обязательной подписки (пусто = отключено)
+# ─── Монетизация ───
+# Пусто = проверка подписки отключена
 REQUIRED_CHANNEL: str = os.getenv("REQUIRED_CHANNEL", "")
 
-# БД
+# ─── База ───
 DB_PATH: str = os.getenv("DB_PATH", "mega_bot.db")
 
-# Валидация
+# ─── Валидация ───
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN не задан в .env")
+    raise RuntimeError("BOT_TOKEN не задан")
 if not LLM_API_KEY:
-    raise RuntimeError("LLM_API_KEY не задан в .env")
+    raise RuntimeError("LLM_API_KEY (или GROQ_API_KEY) не задан")
+if ADMIN_ID == 0:
+    print("⚠️ ADMIN_ID не задан — команда /stats будет недоступна")
