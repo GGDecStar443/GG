@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + защита от спама + баны + админ ЧС
+# Мега-бот: 13 режимов + категории + админка + backup + защита
 import asyncio
 import logging
 import os
@@ -6,6 +6,8 @@ import re
 import random
 import tempfile
 import time
+import shutil
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -13,7 +15,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    Message, CallbackQuery, BufferedInputFile,
+    Message, CallbackQuery, BufferedInputFile, FSInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram.exceptions import TelegramAPIError
@@ -40,19 +42,12 @@ class Mode(StatesGroup):
 
 
 MODE_NAMES = {
-    "toxic": "🧪 Токсик-Чек",
-    "kent": "😎 Кент-Чек",
-    "fortune": "🔮 Гадалка",
-    "meme": "😂 Мем-Генератор",
-    "relationship": "❤️ Анализатор отношений",
-    "cringe": "🤬 Уровень кринжа",
-    "flex": "🌶️ Оценка флекса",
-    "psycho": "🕵️ Психопрофиль",
-    "aura": "🔮 Узнать ауру",
-    "leader": "⚖️ Кто главный",
-    "age": "📱 Возраст по лицу",
-    "crush": "🎯 Тип краша",
-    "lonely": "💀 Уровень одиночества",
+    "toxic": "🧪 Токсик-Чек", "kent": "😎 Кент-Чек", "fortune": "🔮 Гадалка",
+    "meme": "😂 Мем-Генератор", "relationship": "❤️ Анализатор отношений",
+    "cringe": "🤬 Уровень кринжа", "flex": "🌶️ Оценка флекса",
+    "psycho": "🕵️ Психопрофиль", "aura": "🔮 Узнать ауру",
+    "leader": "⚖️ Кто главный", "age": "📱 Возраст по лицу",
+    "crush": "🎯 Тип краша", "lonely": "💀 Уровень одиночества",
 }
 
 WRONG_TYPE_MSG = (
@@ -60,10 +55,8 @@ WRONG_TYPE_MSG = (
     "Скинь <b>фото</b>, а не видео / документ / музыку."
 )
 
-# Anti-flood: 5 секунд между запросами
 _user_last_request = {}
 
-# Детектор мата (русский/английский)
 _BAD_WORDS = re.compile(
     r"(?:хуй|хуя|хуе|хуё|пизд|бля|блят|ебал|ебать|ебёт|ебу|ебись|"
     r"сук[аи]|муда|муди|долбо|дроч|гандон|залуп|манда|"
@@ -73,13 +66,10 @@ _BAD_WORDS = re.compile(
 
 
 def _is_spam_text(text: str) -> bool:
-    """Проверяет, является ли текст нарушением."""
     if not text or len(text) < 3:
         return False
-    # Мат
     if _BAD_WORDS.search(text):
         return True
-    # Капс длиной >30 символов с 1-2 словами (крик)
     words = text.split()
     if len(words) <= 2 and len(text) > 30 and text.isupper():
         return True
@@ -138,6 +128,7 @@ def _admin_menu_kb():
         [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
+        [InlineKeyboardButton(text="💾 Сделать бэкап", callback_data="admin_backup")],
     ])
 
 def _share_kb(mode: str):
@@ -150,7 +141,7 @@ def _share_kb(mode: str):
 
 
 # ═══════════════════════════════════════════
-# ПРОВЕРКИ (подписка + бан)
+# ПРОВЕРКИ
 # ═══════════════════════════════════════════
 async def _require_subscription(message_or_cb):
     is_sub = await monetization.is_subscribed(bot, message_or_cb.from_user.id)
@@ -170,11 +161,8 @@ async def _require_subscription(message_or_cb):
 
 
 async def _require_not_banned(user_id: int) -> bool:
-    """Проверяет, не забанен ли юзер. Возвращает True, если НЕ забанен."""
     status = await database.get_ban_status(user_id)
-    if status["is_banned"]:
-        return False
-    return True
+    return not status["is_banned"]
 
 
 # ═══════════════════════════════════════════
@@ -204,7 +192,6 @@ async def global_error_handler(event):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
 
-    # Проверка бана
     if not await _require_not_banned(message.from_user.id):
         status = await database.get_ban_status(message.from_user.id)
         if status.get("is_permanent"):
@@ -220,7 +207,6 @@ async def cmd_start(message: Message, state: FSMContext):
             ref_by = int(args[1][4:])
         except ValueError:
             pass
-
     if ref_by == message.from_user.id:
         ref_by = None
 
@@ -422,7 +408,7 @@ async def process_admin_give(message: Message, state: FSMContext):
         uid = int(uid_str)
         amount = int(amount_str)
         if amount <= 0:
-            raise ValueError("amount must be positive")
+            raise ValueError
         await database.add_bonus(uid, amount)
         await message.answer(f"✅ Пользователю <code>{uid}</code> начислено <b>+{amount}</b> попыток.")
         try:
@@ -467,7 +453,6 @@ async def cb_admin_stats(cb: CallbackQuery):
     await cb.answer()
 
 
-# ─── Чёрный список ───
 @dp.callback_query(F.data == "admin_blacklist")
 async def cb_admin_blacklist(cb: CallbackQuery):
     if cb.from_user.id != config.ADMIN_ID:
@@ -479,24 +464,22 @@ async def cb_admin_blacklist(cb: CallbackQuery):
             await cb.message.edit_text("✅ Чёрный список пуст.", reply_markup=_admin_menu_kb())
             await cb.answer()
             return
-        
-        for (user_id, username, count, banned_until, is_perm, reason) in banned[:5]:  # первые 5
+        for (user_id, username, count, banned_until, is_perm, reason) in banned[:5]:
             name = f"@{username}" if username else f"ID: {user_id}"
             if is_perm:
                 status_text = "🚫 <b>ПЕРМАНЕНТНЫЙ БАН</b>"
             else:
-                from datetime import datetime
-                ban_dt = datetime.fromisoformat(banned_until) if banned_until else None
-                remaining = int((ban_dt - datetime.now()).total_seconds() / 60) if ban_dt else 0
-                status_text = f"⏳ Бан ещё {remaining} мин."
-            
+                try:
+                    ban_dt = datetime.fromisoformat(banned_until) if banned_until else None
+                    remaining = int((ban_dt - datetime.now()).total_seconds() / 60) if ban_dt else 0
+                    status_text = f"⏳ Бан ещё {remaining} мин."
+                except Exception:
+                    status_text = "⏳ Временный бан"
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ Помиловать", callback_data=f"pardon_{user_id}")]
             ])
             await cb.message.answer(
-                f"{name}\n"
-                f"{status_text}\n"
-                f"Нарушений: {count} | Причина: {reason}",
+                f"{name}\n{status_text}\nНарушений: {count} | Причина: {reason}",
                 reply_markup=kb
             )
         await cb.answer()
@@ -513,11 +496,36 @@ async def cb_pardon(cb: CallbackQuery):
         return
     user_id = int(cb.data.split("_")[1])
     await database.pardon_user(user_id)
-    await cb.message.edit_text(f"✅ Пользователь <code>{user_id}</code> помилован, удалён из ЧС.")
+    await cb.message.edit_text(f"✅ Пользователь <code>{user_id}</code> помилован.")
     try:
         await bot.send_message(user_id, "🎉 Ты был разбанен! Можешь снова пользоваться ботом.")
     except Exception:
         pass
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "admin_backup")
+async def cb_admin_backup(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        await cb.answer("Только для админа", show_alert=True)
+        return
+    try:
+        if not os.path.exists(config.DB_PATH):
+            await cb.message.answer("❌ База не найдена.")
+            await cb.answer()
+            return
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        backup_path = f"/tmp/backup_{date_str}.db"
+        shutil.copy(config.DB_PATH, backup_path)
+        size_kb = os.path.getsize(backup_path) // 1024
+        await cb.message.answer_document(
+            document=FSInputFile(backup_path),
+            caption=f"💾 Бэкап от {date_str} ({size_kb} KB)",
+        )
+        os.remove(backup_path)
+    except Exception as e:
+        log.exception("Backup error: %s", e)
+        await cb.message.answer(f"❌ Ошибка бэкапа: {e}")
     await cb.answer()
 
 
@@ -533,7 +541,7 @@ async def handle_unsupported_content(message: Message):
 
 
 # ═══════════════════════════════════════════
-# ОБРАБОТЧИК ФОТО (с anti-flood)
+# ОБРАБОТЧИК ФОТО
 # ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
@@ -541,16 +549,15 @@ async def handle_photo(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
     try:
-        # Проверка бана
         if not await _require_not_banned(user_id):
             status = await database.get_ban_status(user_id)
             if status.get("is_permanent"):
-                await message.answer("🚫 Ты забанен навсегда за нарушения.")
+                await message.answer("🚫 Ты забанен навсегда.")
             else:
                 await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
             return
 
-        # Anti-flood (5 секунд)
+        # Anti-flood
         now = time.time()
         last = _user_last_request.get(user_id, 0)
         if now - last < 5:
@@ -681,54 +688,41 @@ async def handle_photo(message: Message, state: FSMContext):
 
 
 # ═══════════════════════════════════════════
-# ТЕКСТ (с детектором мата)
+# ТЕКСТ (детектор мата)
 # ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    
-    # Проверка бана (сначала)
+
     if not await _require_not_banned(user_id):
         status = await database.get_ban_status(user_id)
         if status.get("is_permanent"):
-            return  # молча игнорируем
-        else:
-            await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
             return
-    
-    # Детектор нарушений
+        await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
+        return
+
     if _is_spam_text(message.text):
         result = await database.add_violation(user_id, reason="мат/спам")
-        
         if result["action"] == "permanent_ban":
-            await message.answer(
-                "🚫 <b>Ты забанен навсегда</b> за систематические нарушения.\n"
-                "Напиши админу, если хочешь оспорить."
-            )
-            # Уведомляем админа
+            await message.answer("🚫 <b>Ты забанен навсегда</b> за нарушения.")
             try:
                 await bot.send_message(
                     config.ADMIN_ID,
                     f"🚨 <b>ПЕРМАНЕНТНЫЙ БАН</b>\n"
-                    f"Юзер: @{message.from_user.username or user_id}\n"
                     f"ID: <code>{user_id}</code>\n"
                     f"Нарушений: {result['count']}"
                 )
             except Exception:
                 pass
         elif result["action"] == "temp_ban":
-            await message.answer(
-                f"🚫 <b>Ты забанен на 30 минут</b> за мат/спам.\n"
-                f"Если ещё раз — будет навсегда."
-            )
-        else:  # warning
+            await message.answer("🚫 <b>Ты забанен на 30 минут</b> за мат/спам.")
+        else:
             await message.answer(
                 f"⚠️ <b>Предупреждение</b> ({result['count']}/3)\n"
-                f"Мат и спам запрещены. Следующее нарушение — бан на 30 минут."
+                f"Мат и спам запрещены."
             )
         return
-    
-    # Обычный ответ
+
     await message.answer("Нажми /start, чтобы открыть меню.")
 
 
@@ -737,8 +731,9 @@ async def handle_text(message: Message, state: FSMContext):
 # ═══════════════════════════════════════════
 async def main():
     await database.init_db()
-    log.info("Mega bot started. Model=%s | Channel=%s | Admin=%s",
-             config.LLM_MODEL, config.REQUIRED_CHANNEL or "OFF", config.ADMIN_ID or "NOT SET")
+    log.info("Mega bot started. Model=%s | Channel=%s | Admin=%s | DB=%s",
+             config.LLM_MODEL, config.REQUIRED_CHANNEL or "OFF",
+             config.ADMIN_ID or "NOT SET", config.DB_PATH)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
