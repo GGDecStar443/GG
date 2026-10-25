@@ -11,9 +11,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _FONTS_DIR = os.path.join(_HERE, "fonts")
 
 
-# ═══════════════════════════════════════════
-# БАЗОВЫЕ ХЕЛПЕРЫ
-# ═══════════════════════════════════════════
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     for p in [
@@ -71,7 +68,6 @@ def _wrap_lines(draw, text: str, font, max_w: int) -> list[str]:
 
 
 def _center(draw, text, font, y, fill, max_w=None) -> int:
-    """Центрированный текст с авто-переносом. Возвращает y после текста."""
     if max_w:
         for ln in _wrap_lines(draw, text, font, max_w):
             bbox = draw.textbbox((0, 0), ln, font=font)
@@ -87,10 +83,6 @@ def _center(draw, text, font, y, fill, max_w=None) -> int:
 
 def _center_fit(draw, text, y_start: int, max_y: int, fill,
                 max_w: int = WIDTH - 120, max_size: int = 50, min_size: int = 22) -> int:
-    """
-    Рисует текст с АВТОПОДБОРОМ размера шрифта.
-    Гарантирует, что блок влезет между y_start и max_y.
-    """
     text = str(text).strip()
     if not text:
         return y_start
@@ -109,7 +101,6 @@ def _center_fit(draw, text, y_start: int, max_y: int, fill,
             best_size = size
             best_lines = lines
             break
-        # запоминаем последний (минимальный) вариант
         best_lines = lines
 
     font = _font(best_size)
@@ -150,27 +141,32 @@ def _signature(draw):
 
 
 # ═══════════════════════════════════════════
-# 1. ТОКСИК
+# 1. ТОКСИК (адаптивный)
 # ═══════════════════════════════════════════
 def _toxic(data: dict) -> bytes:
     img = _gradient((10, 10, 10), (26, 0, 51))
     d = ImageDraw.Draw(img)
     neon = (0, 255, 204)
+    
     _center(d, "TOXIC CHECK", _font(70, True), 100, neon)
-    y = _draw_big_pct(d, int(data.get("flags", 0)), 480)
+    
+    y = _draw_big_pct(d, int(data.get("flags", 0)), 440)
     _center(d, "КРАСНЫХ ФЛАГОВ", _font(32), y, WHITE)
 
-    y = 900
-    _center(d, f"Токсик: {data.get('toxic', '—')}", _font(60, True), y, WHITE)
-    y += 100
-    _center(d, f"Тип: {data.get('type', '—')}", _font(60, True), y, WHITE)
+    # Токсик и Тип — адаптивные
+    y = 850
+    _center_fit(d, f"Токсик: {data.get('toxic', '—')}", y_start=y, max_y=940, fill=WHITE, max_size=55, min_size=35)
+    _center_fit(d, f"Тип: {data.get('type', '—')}", y_start=960, max_y=1080, fill=WHITE, max_size=55, min_size=30)
 
-    y = 1200
+    # СОВЕТ — адаптивный
+    y = 1130
     _center(d, "СОВЕТ", _font(32), y, neon)
-    _center_fit(d, data.get("advice", ""), y_start=y + 60, max_y=1500, fill=WHITE, max_size=50)
+    _center_fit(d, data.get("advice", ""), y_start=y + 55, max_y=1420, fill=WHITE, max_size=48, min_size=25)
 
-    _center(d, "ВЫВОД", _font(32), 1550, neon)
-    _center_fit(d, data.get("verdict", ""), y_start=1610, max_y=HEIGHT - 120, fill=WHITE, max_size=50)
+    # ВЫВОД — адаптивный
+    y = 1470
+    _center(d, "ВЫВОД", _font(32), y, neon)
+    _center_fit(d, data.get("verdict", ""), y_start=y + 55, max_y=HEIGHT - 100, fill=WHITE, max_size=42, min_size=22)
 
     _signature(d)
     return _save(img)
@@ -244,7 +240,6 @@ def _meme(data: dict) -> bytes:
     bottom = str(data.get("bottom", "")).upper()
     max_text_width = WIDTH - 60
 
-    # Верхний текст
     font_top = _fit_font(top, max_text_width, max_size=110, bold=True)
     y = 150
     for line in _wrap_lines(d, top, font_top, max_text_width):
@@ -257,7 +252,6 @@ def _meme(data: dict) -> bytes:
         d.text((x, y), line, font=font_top, fill=WHITE)
         y += th + 15
 
-    # Смайл по центру
     cx, cy = WIDTH // 2, HEIGHT // 2
     r = 250
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 220, 0))
@@ -265,7 +259,6 @@ def _meme(data: dict) -> bytes:
     d.ellipse([cx + 40, cy - 100, cx + 120, cy - 20], fill=(0, 0, 0))
     d.arc([cx - 160, cy - 40, cx + 160, cy + 180], start=20, end=160, fill=(0, 0, 0), width=25)
 
-    # Нижний текст
     font_bot = _fit_font(bottom, max_text_width, max_size=110, bold=True)
     lines_bot = _wrap_lines(d, bottom, font_bot, max_text_width)
     total_h = sum(d.textbbox((0, 0), ln, font=font_bot)[3] + 15 for ln in lines_bot)
@@ -565,7 +558,7 @@ def _lonely(data: dict) -> bytes:
 
 
 # ═══════════════════════════════════════════
-# МЕМ С ФОТО (классический мем)
+# МЕМ С ФОТО
 # ═══════════════════════════════════════════
 def create_meme_with_photo(image_bytes: bytes, data: dict) -> bytes:
     try:
@@ -595,7 +588,6 @@ def create_meme_with_photo(image_bytes: bytes, data: dict) -> bytes:
     bottom_text = str(data.get("bottom", "")).upper()
     max_text_width = WIDTH - 60
 
-    # Верхний
     font_top = _fit_font(top_text, max_text_width, max_size=110, bold=True)
     y = 40
     for line in _wrap_lines(d, top_text, font_top, max_text_width):
@@ -608,7 +600,6 @@ def create_meme_with_photo(image_bytes: bytes, data: dict) -> bytes:
         d.text((x, y), line, font=font_top, fill=WHITE)
         y += th + 15
 
-    # Нижний (снизу вверх)
     font_bot = _fit_font(bottom_text, max_text_width, max_size=110, bold=True)
     lines_bot = _wrap_lines(d, bottom_text, font_bot, max_text_width)
     total_h = sum(d.textbbox((0, 0), ln, font=font_bot)[3] + 15 for ln in lines_bot)
