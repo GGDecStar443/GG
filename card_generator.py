@@ -1,4 +1,4 @@
-# 4 разных дизайна карточек
+# Генерация карточек: Токсик, Кент, Гадалка, Мем
 import io
 import os
 from PIL import Image, ImageDraw, ImageFont
@@ -23,6 +23,20 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
             try: return ImageFont.truetype(p, size=size)
             except (OSError, IOError): continue
     return ImageFont.load_default()
+
+
+def _fit_font(text: str, max_width: int, max_size: int, bold: bool = True, min_size: int = 40) -> ImageFont.FreeTypeFont:
+    """Подбирает размер шрифта, чтобы текст влез в max_width."""
+    # Если текст пустой - возвращаем дефолт
+    if not text.strip():
+        return _font(max_size, bold=bold)
+
+    for size in range(max_size, min_size - 1, -5):
+        f = _font(size, bold=bold)
+        bbox = f.getbbox(text)
+        if bbox[2] - bbox[0] <= max_width:
+            return f
+    return _font(min_size, bold=bold)
 
 
 def _gradient(top, bot) -> Image.Image:
@@ -56,6 +70,7 @@ def _center(draw, text, font, y, fill, max_w=None):
             draw.text(((WIDTH - w) / 2, y), ln, font=font, fill=fill)
             y += h + 10
         return y
+    
     bbox = draw.textbbox((0, 0), text, font=font)
     w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
     draw.text(((WIDTH - w) / 2, y), text, font=font, fill=fill)
@@ -92,7 +107,9 @@ def _toxic(data: dict) -> bytes:
     img = _gradient((10, 10, 10), (26, 0, 51))
     d = ImageDraw.Draw(img)
     neon = (0, 255, 204)
+    
     _center(d, "TOXIC CHECK", _font(70, True), 100, neon)
+    
     y = _draw_big_pct(d, int(data.get("flags", 0)), 480)
     _center(d, "КРАСНЫХ ФЛАГОВ", _font(32), y, WHITE)
 
@@ -118,7 +135,9 @@ def _kent(data: dict) -> bytes:
     img = _gradient((15, 5, 0), (40, 10, 0))
     d = ImageDraw.Draw(img)
     acc = (255, 140, 0)
+    
     _center(d, "KENT CHECK", _font(80, True), 100, acc)
+    
     y = _draw_big_pct(d, int(data.get("kent_level", 0)), 380)
     _center(d, "УРОВЕНЬ КЕНТА", _font(32), y, WHITE)
 
@@ -175,33 +194,95 @@ def _fortune(data: dict) -> bytes:
     return _save(img)
 
 
-# ─────────── МЕМ ───────────
+# ─────────── МЕМ (ИСПРАВЛЕННЫЙ) ───────────
 def _meme(data: dict) -> bytes:
     img = _gradient((0, 0, 0), (20, 20, 20))
     d = ImageDraw.Draw(img)
 
-    f = _font(90, bold=True)
     top = str(data.get("top", "")).upper()
-    bbox = d.textbbox((0, 0), top, font=f)
-    tw = bbox[2] - bbox[0]
-    x = (WIDTH - tw) / 2
-    for dx in (-3, 0, 3):
-        for dy in (-3, 0, 3):
-            d.text((x + dx, 150 + dy), top, font=f, fill=(0, 0, 0))
-    d.text((x, 150), top, font=f, fill=WHITE)
-
-    emoji = _font(400)
-    _center(d, "😂", emoji, 700, WHITE)
-
     bottom = str(data.get("bottom", "")).upper()
-    bbox = d.textbbox((0, 0), bottom, font=f)
-    tw = bbox[2] - bbox[0]
-    x = (WIDTH - tw) / 2
-    for dx in (-3, 0, 3):
-        for dy in (-3, 0, 3):
-            d.text((x + dx, 1350 + dy), bottom, font=f, fill=(0, 0, 0))
-    d.text((x, 1350), bottom, font=f, fill=WHITE)
+    max_text_width = WIDTH - 60
 
+    # ─── ВЕРХНИЙ ТЕКСТ ───
+    font_top = _fit_font(top, max_text_width, max_size=110, bold=True)
+    
+    # Проверка на перенос
+    bbox = d.textbbox((0, 0), top, font=font_top)
+    if bbox[2] - bbox[0] > max_text_width:
+        words = top.split()
+        lines, cur = [], ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            bbox = d.textbbox((0, 0), test, font=font_top)
+            if bbox[2] - bbox[0] <= max_text_width:
+                cur = test
+            else:
+                if cur: lines.append(cur)
+                cur = w
+        if cur: lines.append(cur)
+    else:
+        lines = [top]
+
+    # Рисуем верх
+    y = 150
+    for line in lines:
+        bbox = d.textbbox((0, 0), line, font=font_top)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (WIDTH - tw) / 2
+        # Обводка
+        for dx in (-4, 0, 4):
+            for dy in (-4, 0, 4):
+                d.text((x + dx, y + dy), line, font=font_top, fill=(0, 0, 0))
+        d.text((x, y), line, font=font_top, fill=WHITE)
+        y += th + 20
+
+    # ─── ЦЕНТР: Нарисованный смайл (без эмодзи) ───
+    cx, cy = WIDTH // 2, HEIGHT // 2
+    r = 250
+    # Жёлтый круг
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 220, 0))
+    # Глаза
+    d.ellipse([cx - 120, cy - 100, cx - 40, cy - 20], fill=(0, 0, 0))
+    d.ellipse([cx + 40, cy - 100, cx + 120, cy - 20], fill=(0, 0, 0))
+    # Улыбка
+    d.arc([cx - 160, cy - 40, cx + 160, cy + 180], start=20, end=160, fill=(0, 0, 0), width=25)
+
+    # ─── НИЖНИЙ ТЕКСТ ───
+    font_bot = _fit_font(bottom, max_text_width, max_size=110, bold=True)
+    
+    bbox = d.textbbox((0, 0), bottom, font=font_bot)
+    if bbox[2] - bbox[0] > max_text_width:
+        words = bottom.split()
+        lines_bot, cur = [], ""
+        for w in words:
+            test = (cur + " " + w).strip()
+            bbox = d.textbbox((0, 0), test, font=font_bot)
+            if bbox[2] - bbox[0] <= max_text_width:
+                cur = test
+            else:
+                if cur: lines_bot.append(cur)
+                cur = w
+        if cur: lines_bot.append(cur)
+    else:
+        lines_bot = [bottom]
+
+    # Рисуем нижние строки (снизу вверх)
+    y_bot = HEIGHT - 350
+    for line in reversed(lines_bot):
+        bbox = d.textbbox((0, 0), line, font=font_bot)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (WIDTH - tw) / 2
+        for dx in (-4, 0, 4):
+            for dy in (-4, 0, 4):
+                d.text((x + dx, y_bot + dy), line, font=font_bot, fill=(0, 0, 0))
+        d.text((x, y_bot), line, font=font_bot, fill=WHITE)
+        y_bot -= (th + 20)
+        
+        # Защита от наложения на смайл
+        if y_bot < HEIGHT // 2 + 250:
+            break
+
+    # ─── Жанр + хештег ───
     _center(d, f"#{data.get('hashtag', 'мем')} • {data.get('genre', '')}", _font(36), 1650, (180, 180, 180))
 
     _signature(d)
