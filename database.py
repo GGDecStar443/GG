@@ -2,7 +2,7 @@
 import aiosqlite
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 from config import DB_PATH, REFERRAL_BONUS, REFERRAL_DAILY_LIMIT
 
 
@@ -16,7 +16,9 @@ async def init_db():
                 total_requests INTEGER DEFAULT 0,
                 referred_by INTEGER,
                 bonus_today INTEGER DEFAULT 0,
-                bonus_date DATE
+                bonus_date DATE,
+                last_daily_bonus DATE,
+                points INTEGER DEFAULT 0
             )
         """)
         await db.execute("""
@@ -105,7 +107,6 @@ async def add_bonus(user_id: int, amount: int):
     """Админская выдача бонусных попыток."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        # Проверяем, есть ли юзер
         async with db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)) as cur:
             if not await cur.fetchone():
                 await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
@@ -122,6 +123,25 @@ async def add_bonus(user_id: int, amount: int):
         await db.commit()
 
 
+async def check_daily_bonus(user_id: int) -> bool:
+    """Проверяет, брал ли юзер бонус сегодня. Если нет — выдаёт +1 и возвращает True."""
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if not row or row[0] != today:
+            # Выдаём бонус
+            await db.execute("UPDATE users SET last_daily_bonus=? WHERE user_id=?", (today, user_id))
+            # Добавляем +1 к попыткам
+            await db.execute(
+                "UPDATE users SET bonus_today = bonus_today + 1, bonus_date = ? WHERE user_id = ?",
+                (today, user_id)
+            )
+            await db.commit()
+            return True
+        return False
+
+
 async def can_make_request(user_id: int, daily_limit: int) -> bool:
     used = await get_today_requests(user_id)
     bonus = await get_bonus_today(user_id)
@@ -136,7 +156,7 @@ async def log_request(user_id: int, score: int, mode: str):
             (user_id, today, mode, score),
         )
         await db.execute(
-            "UPDATE users SET total_requests = total_requests + 1 WHERE user_id=?",
+            "UPDATE users SET total_requests = total_requests + 1, points = points + 10 WHERE user_id=?",
             (user_id,),
         )
         await db.commit()
@@ -176,6 +196,22 @@ async def get_referral_count(user_id: int) -> int:
         ) as cur:
             row = await cur.fetchone()
     return row[0] if row else 0
+
+
+async def get_weekly_top() -> list:
+    """Топ-10 юзеров по активности за 7 дней. Возвращает только username/ID."""
+    seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT u.username, u.user_id, COUNT(r.id) as cnt
+            FROM users u
+            JOIN requests r ON r.user_id = u.user_id
+            WHERE r.date >= ?
+            GROUP BY u.user_id
+            ORDER BY cnt DESC
+            LIMIT 10
+        """, (seven_days_ago,)) as cur:
+            return await cur.fetchall()
 
 
 # ─────────── СТАТИСТИКА ───────────
