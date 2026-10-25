@@ -1,4 +1,4 @@
-# База с кэшем, рефералкой, режимами
+# База: юзеры, запросы, кэш, рефералка, статистика
 import aiosqlite
 import hashlib
 import json
@@ -155,3 +155,73 @@ async def get_referral_count(user_id: int) -> int:
         ) as cur:
             row = await cur.fetchone()
     return row[0] if row else 0
+
+
+# ─────────── СТАТИСТИКА ДЛЯ АДМИНА ───────────
+async def get_full_stats() -> dict:
+    """Полная статистика бота."""
+    today = date.today().isoformat()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            total_users = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE DATE(first_seen) = ?", (today,)
+        ) as cur:
+            new_today = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM requests WHERE date = ?", (today,)
+        ) as cur:
+            active_today = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM requests WHERE date = ?", (today,)
+        ) as cur:
+            requests_today = (await cur.fetchone())[0]
+
+        async with db.execute("SELECT COUNT(*) FROM requests") as cur:
+            requests_total = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT mode, COUNT(*) FROM requests GROUP BY mode"
+        ) as cur:
+            by_mode_rows = await cur.fetchall()
+
+        async with db.execute("SELECT COUNT(*) FROM cache") as cur:
+            cache_size = (await cur.fetchone())[0]
+
+        # ТОП-5 активных юзеров
+        async with db.execute("""
+            SELECT u.username, u.user_id, COUNT(r.id) as cnt
+            FROM users u
+            JOIN requests r ON r.user_id = u.user_id
+            GROUP BY u.user_id
+            ORDER BY cnt DESC
+            LIMIT 5
+        """) as cur:
+            top_users = await cur.fetchall()
+
+        # ТОП-5 рефереров
+        async with db.execute("""
+            SELECT u.username, u.user_id, COUNT(u2.user_id) as refs
+            FROM users u
+            JOIN users u2 ON u2.referred_by = u.user_id
+            GROUP BY u.user_id
+            ORDER BY refs DESC
+            LIMIT 5
+        """) as cur:
+            top_referrers = await cur.fetchall()
+
+    return {
+        "total_users": total_users,
+        "new_today": new_today,
+        "active_today": active_today,
+        "requests_today": requests_today,
+        "requests_total": requests_total,
+        "by_mode": dict(by_mode_rows),
+        "cache_size": cache_size,
+        "top_users": top_users,
+        "top_referrers": top_referrers,
+    }
