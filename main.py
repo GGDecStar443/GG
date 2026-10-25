@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + категории + админка + защита (ФИКСЫ)
+# Мега-бот: 13 режимов + категории + админка + защита + кнопка "В меню"
 import asyncio
 import logging
 import os
@@ -152,7 +152,10 @@ def _share_kb(mode: str):
     share_url = f"https://t.me/share/url?url={config.BOT_LINK}&text={share_text}"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔗 Поделиться с другом", url=share_url)],
-        [InlineKeyboardButton(text="🎲 Ещё раз", callback_data="random_mode")],
+        [
+            InlineKeyboardButton(text="🎲 Ещё раз", callback_data="random_mode"),
+            InlineKeyboardButton(text="🏠 В меню", callback_data="back_main"),
+        ],
     ])
 
 
@@ -287,7 +290,6 @@ async def cb_category(cb: CallbackQuery):
         elif cat == "meme":
             await cb.message.edit_text("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
     except TelegramAPIError:
-        # Если не текст — отправляем новое
         if cat == "photo":
             await cb.message.answer("📸 <b>Анализ фото:</b>", reply_markup=_cat_photo_kb())
         elif cat == "love":
@@ -339,7 +341,6 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
     text = f"🎲 Выпал режим: <b>{name}</b>\n\n{hint}"
-    # ВСЕГДА отправляем новое — потому что старое может быть фото
     try:
         await cb.message.answer(text, reply_markup=kb)
     except Exception:
@@ -686,7 +687,7 @@ async def handle_photo(message: Message, state: FSMContext):
             "lonely": f"💀 Одиночество: <b>{result.get('lonely', 0)}%</b> | {result.get('status', '—')}",
             "meme": "😂 Мем готов!",
         }
-        caption = captions.get(mode, "Готово!")
+        caption = captions.get(mode, "Готово!") + "\n\n💡 <i>Поделись с другом — пусть тоже проверит!</i>"
 
         try:
             pf = BufferedInputFile(card_bytes, filename="card.jpg")
