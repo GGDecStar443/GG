@@ -1,4 +1,4 @@
-# Мега-бот: 4 режима + рефералка + подписка + кэш
+# Мега-бот: 4 режима + статистика + рефералка + кэш
 import asyncio
 import logging
 import os
@@ -163,6 +163,62 @@ async def cmd_myref(m: Message):
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
         f"За каждого друга: +{config.REFERRAL_BONUS} проверки (до +{config.REFERRAL_DAILY_LIMIT}/день)"
     )
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    """Полная статистика — только для админа."""
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("⛔ Команда только для админа.")
+        return
+
+    try:
+        s = await database.get_full_stats()
+    except Exception as e:
+        log.exception("Stats error: %s", e)
+        await message.answer("Ошибка при сборе статистики.")
+        return
+
+    avg_cost = 0.08
+    est_cost = s["requests_total"] * avg_cost
+
+    mode_names = {
+        "toxic": "🧪 Токсик",
+        "kent": "😎 Кент",
+        "fortune": "🔮 Гадалка",
+        "meme": "😂 Мем",
+    }
+
+    modes_text = "\n".join(
+        f"  {mode_names.get(m, m)}: <b>{c}</b>"
+        for m, c in sorted(s["by_mode"].items(), key=lambda x: -x[1])
+    ) or "  —"
+
+    top_users_text = "\n".join(
+        f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
+        for i, u in enumerate(s["top_users"])
+    ) or "  —"
+
+    top_ref_text = "\n".join(
+        f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
+        for i, u in enumerate(s["top_referrers"])
+    ) or "  —"
+
+    text = (
+        "📊 <b>СТАТИСТИКА БОТА</b>\n\n"
+        f"👥 Всего юзеров: <b>{s['total_users']}</b>\n"
+        f"📅 Новых сегодня: <b>{s['new_today']}</b>\n"
+        f"🔥 Активных сегодня: <b>{s['active_today']}</b>\n\n"
+        f"📨 Запросов сегодня: <b>{s['requests_today']}</b>\n"
+        f"📨 Запросов всего: <b>{s['requests_total']}</b>\n"
+        f"💾 В кэше: <b>{s['cache_size']}</b>\n\n"
+        f"<b>По режимам:</b>\n{modes_text}\n\n"
+        f"<b>ТОП-5 активных:</b>\n{top_users_text}\n\n"
+        f"<b>ТОП-5 рефереров:</b>\n{top_ref_text}\n\n"
+        f"💰 Расход: <b>~{est_cost:.1f}₽</b>\n"
+        f"<i>(~0.08₽/запрос)</i>"
+    )
+    await message.answer(text)
 
 
 @dp.message(F.photo)
