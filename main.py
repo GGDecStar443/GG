@@ -1,9 +1,11 @@
-# Мега-бот: 13 режимов + категории + админка + оптимизация
+# Мега-бот: 13 режимов + защита от спама + баны + админ ЧС
 import asyncio
 import logging
 import os
+import re
 import random
 import tempfile
+import time
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -58,6 +60,31 @@ WRONG_TYPE_MSG = (
     "Скинь <b>фото</b>, а не видео / документ / музыку."
 )
 
+# Anti-flood: 5 секунд между запросами
+_user_last_request = {}
+
+# Детектор мата (русский/английский)
+_BAD_WORDS = re.compile(
+    r"(?:хуй|хуя|хуе|хуё|пизд|бля|блят|ебал|ебать|ебёт|ебу|ебись|"
+    r"сук[аи]|муда|муди|долбо|дроч|гандон|залуп|манда|"
+    r"fuck|shit|bitch|asshole|cunt|dick|pussy)",
+    re.IGNORECASE,
+)
+
+
+def _is_spam_text(text: str) -> bool:
+    """Проверяет, является ли текст нарушением."""
+    if not text or len(text) < 3:
+        return False
+    # Мат
+    if _BAD_WORDS.search(text):
+        return True
+    # Капс длиной >30 символов с 1-2 словами (крик)
+    words = text.split()
+    if len(words) <= 2 and len(text) > 30 and text.isupper():
+        return True
+    return False
+
 
 # ═══════════════════════════════════════════
 # КЛАВИАТУРЫ
@@ -73,7 +100,6 @@ def _main_menu_kb():
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")],
     ])
 
-
 def _cat_photo_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧪 Токсик-Чек", callback_data="m_toxic")],
@@ -86,7 +112,6 @@ def _cat_photo_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
-
 def _cat_love_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❤️ Анализатор отношений", callback_data="m_relationship")],
@@ -96,13 +121,11 @@ def _cat_love_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
-
 def _cat_mystic_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔮 Гадалка", callback_data="m_fortune")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
-
 
 def _cat_meme_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -110,13 +133,12 @@ def _cat_meme_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
-
 def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎁 Выдать попытки по ID", callback_data="admin_give")],
+        [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
     ])
-
 
 def _share_kb(mode: str):
     share_text = f"Смотри, что про меня выдал AI! 👉 @{config.BOT_USERNAME}"
@@ -128,7 +150,7 @@ def _share_kb(mode: str):
 
 
 # ═══════════════════════════════════════════
-# ПРОВЕРКА ПОДПИСКИ
+# ПРОВЕРКИ (подписка + бан)
 # ═══════════════════════════════════════════
 async def _require_subscription(message_or_cb):
     is_sub = await monetization.is_subscribed(bot, message_or_cb.from_user.id)
@@ -147,8 +169,16 @@ async def _require_subscription(message_or_cb):
     return True
 
 
+async def _require_not_banned(user_id: int) -> bool:
+    """Проверяет, не забанен ли юзер. Возвращает True, если НЕ забанен."""
+    status = await database.get_ban_status(user_id)
+    if status["is_banned"]:
+        return False
+    return True
+
+
 # ═══════════════════════════════════════════
-# ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК ОШИБОК
+# ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК
 # ═══════════════════════════════════════════
 @dp.errors()
 async def global_error_handler(event):
@@ -173,6 +203,15 @@ async def global_error_handler(event):
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+
+    # Проверка бана
+    if not await _require_not_banned(message.from_user.id):
+        status = await database.get_ban_status(message.from_user.id)
+        if status.get("is_permanent"):
+            await message.answer("🚫 Ты забанен навсегда за нарушения. Обратись к админу.")
+        else:
+            await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
+        return
 
     args = message.text.split(maxsplit=1)
     ref_by = None
@@ -216,6 +255,9 @@ async def cmd_start(message: Message, state: FSMContext):
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     try:
@@ -227,6 +269,9 @@ async def cb_back_main(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cat_"))
 async def cb_category(cb: CallbackQuery):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     cat = cb.data.split("_", 1)[1]
@@ -243,6 +288,9 @@ async def cb_category(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     ref_count = await database.get_referral_count(cb.from_user.id)
@@ -263,6 +311,9 @@ async def cb_invite(cb: CallbackQuery):
 
 @dp.callback_query(F.data == "random_mode")
 async def cb_random(cb: CallbackQuery, state: FSMContext):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     mode = random.choice(list(MODES.keys()))
@@ -280,6 +331,9 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "top_week")
 async def cb_top_week(cb: CallbackQuery):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     top = await database.get_weekly_top()
@@ -302,6 +356,9 @@ async def cb_top_week(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("m_"))
 async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
     if not await _require_subscription(cb):
         return
     mode = cb.data.split("_", 1)[1]
@@ -410,27 +467,99 @@ async def cb_admin_stats(cb: CallbackQuery):
     await cb.answer()
 
 
+# ─── Чёрный список ───
+@dp.callback_query(F.data == "admin_blacklist")
+async def cb_admin_blacklist(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        await cb.answer("Только для админа", show_alert=True)
+        return
+    try:
+        banned = await database.get_banned_users()
+        if not banned:
+            await cb.message.edit_text("✅ Чёрный список пуст.", reply_markup=_admin_menu_kb())
+            await cb.answer()
+            return
+        
+        for (user_id, username, count, banned_until, is_perm, reason) in banned[:5]:  # первые 5
+            name = f"@{username}" if username else f"ID: {user_id}"
+            if is_perm:
+                status_text = "🚫 <b>ПЕРМАНЕНТНЫЙ БАН</b>"
+            else:
+                from datetime import datetime
+                ban_dt = datetime.fromisoformat(banned_until) if banned_until else None
+                remaining = int((ban_dt - datetime.now()).total_seconds() / 60) if ban_dt else 0
+                status_text = f"⏳ Бан ещё {remaining} мин."
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Помиловать", callback_data=f"pardon_{user_id}")]
+            ])
+            await cb.message.answer(
+                f"{name}\n"
+                f"{status_text}\n"
+                f"Нарушений: {count} | Причина: {reason}",
+                reply_markup=kb
+            )
+        await cb.answer()
+    except Exception as e:
+        log.exception("Blacklist error: %s", e)
+        await cb.message.answer("Ошибка при загрузке ЧС.")
+        await cb.answer()
+
+
+@dp.callback_query(F.data.startswith("pardon_"))
+async def cb_pardon(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        await cb.answer("Только для админа", show_alert=True)
+        return
+    user_id = int(cb.data.split("_")[1])
+    await database.pardon_user(user_id)
+    await cb.message.edit_text(f"✅ Пользователь <code>{user_id}</code> помилован, удалён из ЧС.")
+    try:
+        await bot.send_message(user_id, "🎉 Ты был разбанен! Можешь снова пользоваться ботом.")
+    except Exception:
+        pass
+    await cb.answer()
+
+
 # ═══════════════════════════════════════════
 # ЗАЩИТА: НЕ-ФОТО
 # ═══════════════════════════════════════════
 @dp.message(F.video | F.document | F.audio | F.voice | F.video_note
             | F.sticker | F.animation | F.contact | F.location | F.poll)
 async def handle_unsupported_content(message: Message):
+    if not await _require_not_banned(message.from_user.id):
+        return
     await message.answer(WRONG_TYPE_MSG, reply_markup=_main_menu_kb())
 
 
 # ═══════════════════════════════════════════
-# ОБРАБОТЧИК ФОТО (оптимизированный)
+# ОБРАБОТЧИК ФОТО (с anti-flood)
 # ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     tmp = None
+    user_id = message.from_user.id
 
     try:
-        if not await _require_subscription(message):
+        # Проверка бана
+        if not await _require_not_banned(user_id):
+            status = await database.get_ban_status(user_id)
+            if status.get("is_permanent"):
+                await message.answer("🚫 Ты забанен навсегда за нарушения.")
+            else:
+                await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
             return
 
-        user_id = message.from_user.id
+        # Anti-flood (5 секунд)
+        now = time.time()
+        last = _user_last_request.get(user_id, 0)
+        if now - last < 5:
+            await message.answer("⏳ Не так быстро! Подожди 5 секунд.")
+            return
+        _user_last_request[user_id] = now
+
+        if not await _require_subscription(message):
+            return
 
         if not await database.can_make_request(user_id, config.DAILY_LIMIT):
             ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{user_id}"
@@ -469,7 +598,6 @@ async def handle_photo(message: Message, state: FSMContext):
 
         wait = await message.answer("🔍 Анализирую...")
 
-        # Кэш
         result = await database.get_cached(img_bytes, mode)
         from_cache = result is not None
 
@@ -485,7 +613,6 @@ async def handle_photo(message: Message, state: FSMContext):
                     pass
                 return
 
-        # ─── Генерация в отдельном потоке (не блокирует event loop) ───
         try:
             if mode == "meme":
                 card_bytes = await asyncio.to_thread(
@@ -503,7 +630,6 @@ async def handle_photo(message: Message, state: FSMContext):
                 pass
             return
 
-        # Caption
         captions = {
             "toxic": f"🧪 Токсик: <b>{result.get('toxic', '—')}</b> | Флаги: <b>{result.get('flags', 0)}%</b>",
             "kent": f"😎 Кент: <b>{result.get('verdict', '—')}</b> | Уровень: <b>{result.get('kent_level', 0)}%</b>",
@@ -521,7 +647,6 @@ async def handle_photo(message: Message, state: FSMContext):
         }
         caption = captions.get(mode, "Готово!")
 
-        # Отправка
         try:
             pf = BufferedInputFile(card_bytes, filename="card.jpg")
             await message.answer_photo(photo=pf, caption=caption, reply_markup=_share_kb(mode))
@@ -555,11 +680,61 @@ async def handle_photo(message: Message, state: FSMContext):
                 pass
 
 
+# ═══════════════════════════════════════════
+# ТЕКСТ (с детектором мата)
+# ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    
+    # Проверка бана (сначала)
+    if not await _require_not_banned(user_id):
+        status = await database.get_ban_status(user_id)
+        if status.get("is_permanent"):
+            return  # молча игнорируем
+        else:
+            await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин.")
+            return
+    
+    # Детектор нарушений
+    if _is_spam_text(message.text):
+        result = await database.add_violation(user_id, reason="мат/спам")
+        
+        if result["action"] == "permanent_ban":
+            await message.answer(
+                "🚫 <b>Ты забанен навсегда</b> за систематические нарушения.\n"
+                "Напиши админу, если хочешь оспорить."
+            )
+            # Уведомляем админа
+            try:
+                await bot.send_message(
+                    config.ADMIN_ID,
+                    f"🚨 <b>ПЕРМАНЕНТНЫЙ БАН</b>\n"
+                    f"Юзер: @{message.from_user.username or user_id}\n"
+                    f"ID: <code>{user_id}</code>\n"
+                    f"Нарушений: {result['count']}"
+                )
+            except Exception:
+                pass
+        elif result["action"] == "temp_ban":
+            await message.answer(
+                f"🚫 <b>Ты забанен на 30 минут</b> за мат/спам.\n"
+                f"Если ещё раз — будет навсегда."
+            )
+        else:  # warning
+            await message.answer(
+                f"⚠️ <b>Предупреждение</b> ({result['count']}/3)\n"
+                f"Мат и спам запрещены. Следующее нарушение — бан на 30 минут."
+            )
+        return
+    
+    # Обычный ответ
     await message.answer("Нажми /start, чтобы открыть меню.")
 
 
+# ═══════════════════════════════════════════
+# ЗАПУСК
+# ═══════════════════════════════════════════
 async def main():
     await database.init_db()
     log.info("Mega bot started. Model=%s | Channel=%s | Admin=%s",
