@@ -44,7 +44,7 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
             ],
         }],
         "max_tokens": 250,
-        "temperature": 0.7,
+        "temperature": 0.4,
     }
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
