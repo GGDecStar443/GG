@@ -1,3 +1,4 @@
+# База: юзеры, запросы, кэш, рефералка, статистика, бонусы
 import aiosqlite
 import hashlib
 import json
@@ -98,6 +99,27 @@ async def add_referral_bonus(user_id: int) -> bool:
         )
         await db.commit()
     return True
+
+
+async def add_bonus(user_id: int, amount: int):
+    """Админская выдача бонусных попыток."""
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Проверяем, есть ли юзер
+        async with db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)) as cur:
+            if not await cur.fetchone():
+                await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        
+        async with db.execute("SELECT bonus_today, bonus_date FROM users WHERE user_id=?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        
+        current_bonus = 0
+        if row and row[1] == today:
+            current_bonus = row[0] or 0
+            
+        new_bonus = current_bonus + amount
+        await db.execute("UPDATE users SET bonus_today=?, bonus_date=? WHERE user_id=?", (new_bonus, today, user_id))
+        await db.commit()
 
 
 async def can_make_request(user_id: int, daily_limit: int) -> bool:
