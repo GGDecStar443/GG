@@ -1,3 +1,4 @@
+# Мега-бот: 13 режимов + категории + админка + оптимизация
 import asyncio
 import logging
 import os
@@ -72,6 +73,7 @@ def _main_menu_kb():
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")],
     ])
 
+
 def _cat_photo_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧪 Токсик-Чек", callback_data="m_toxic")],
@@ -84,14 +86,16 @@ def _cat_photo_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
+
 def _cat_love_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❤️ Анализатор отношений", callback_data="m_relationship")],
-        [InlineKeyboardButton(text="⚖️ Кто главный в переписке", callback_data="m_leader")],
-        [InlineKeyboardButton(text="🎯 Тип твоего краша", callback_data="m_crush")],
+        [InlineKeyboardButton(text="⚖️ Кто главный", callback_data="m_leader")],
+        [InlineKeyboardButton(text="🎯 Тип краша", callback_data="m_crush")],
         [InlineKeyboardButton(text="🌶️ Оценка флекса", callback_data="m_flex")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
+
 
 def _cat_mystic_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -99,11 +103,13 @@ def _cat_mystic_kb():
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
 
+
 def _cat_meme_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="😂 Мем-Генератор", callback_data="m_meme")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")],
     ])
+
 
 def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -111,8 +117,8 @@ def _admin_menu_kb():
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
     ])
 
+
 def _share_kb(mode: str):
-    """Кнопка «Поделиться» под карточкой."""
     share_text = f"Смотри, что про меня выдал AI! 👉 @{config.BOT_USERNAME}"
     share_url = f"https://t.me/share/url?url={config.BOT_LINK}&text={share_text}"
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -162,7 +168,7 @@ async def global_error_handler(event):
 
 
 # ═══════════════════════════════════════════
-# СТАРТ (с ежедневным бонусом)
+# СТАРТ
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -189,7 +195,6 @@ async def cmd_start(message: Message, state: FSMContext):
     if not await _require_subscription(message):
         return
 
-    # Ежедневный бонус
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
 
@@ -207,7 +212,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 
 # ═══════════════════════════════════════════
-# МЕНЮ: КАТЕГОРИИ
+# КАТЕГОРИИ
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
@@ -218,6 +223,7 @@ async def cb_back_main(cb: CallbackQuery):
     except TelegramAPIError:
         await cb.message.answer("Выбери категорию:", reply_markup=_main_menu_kb())
     await cb.answer()
+
 
 @dp.callback_query(F.data.startswith("cat_"))
 async def cb_category(cb: CallbackQuery):
@@ -233,6 +239,7 @@ async def cb_category(cb: CallbackQuery):
     elif cat == "meme":
         await cb.message.edit_text("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
     await cb.answer()
+
 
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
@@ -253,7 +260,7 @@ async def cb_invite(cb: CallbackQuery):
     )
     await cb.answer()
 
-# ─── Рандом ───
+
 @dp.callback_query(F.data == "random_mode")
 async def cb_random(cb: CallbackQuery, state: FSMContext):
     if not await _require_subscription(cb):
@@ -270,7 +277,7 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
     )
     await cb.answer("Рандом выбрал режим!", show_alert=False)
 
-# ─── Топ недели ───
+
 @dp.callback_query(F.data == "top_week")
 async def cb_top_week(cb: CallbackQuery):
     if not await _require_subscription(cb):
@@ -293,9 +300,6 @@ async def cb_top_week(cb: CallbackQuery):
     await cb.answer()
 
 
-# ═══════════════════════════════════════════
-# ВЫБОР РЕЖИМА
-# ═══════════════════════════════════════════
 @dp.callback_query(F.data.startswith("m_"))
 async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
     if not await _require_subscription(cb):
@@ -304,10 +308,8 @@ async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
     if mode not in MODES:
         await cb.answer("Неизвестный режим", show_alert=True)
         return
-
     await state.set_state(Mode.waiting_photo)
     await state.update_data(mode=mode)
-
     name = MODE_NAMES.get(mode, mode.upper())
     await cb.message.edit_text(
         f"Режим: <b>{name}</b>\n\nСкинь фото 👇",
@@ -340,6 +342,7 @@ async def cmd_admin(message: Message, state: FSMContext):
         return
     await message.answer("👑 <b>Админ-панель</b>", reply_markup=_admin_menu_kb())
 
+
 @dp.callback_query(F.data == "admin_give")
 async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != config.ADMIN_ID:
@@ -351,6 +354,7 @@ async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
         "Пример: <code>123456789 10</code>"
     )
     await cb.answer()
+
 
 @dp.message(Mode.admin_give_bonus, F.text)
 async def process_admin_give(message: Message, state: FSMContext):
@@ -371,6 +375,7 @@ async def process_admin_give(message: Message, state: FSMContext):
     except Exception:
         await message.answer("❌ Ошибка. Формат: <code>ID количество</code>")
     await state.clear()
+
 
 @dp.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(cb: CallbackQuery):
@@ -415,7 +420,7 @@ async def handle_unsupported_content(message: Message):
 
 
 # ═══════════════════════════════════════════
-# ОСНОВНОЙ ОБРАБОТЧИК ФОТО
+# ОБРАБОТЧИК ФОТО (оптимизированный)
 # ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
@@ -480,12 +485,16 @@ async def handle_photo(message: Message, state: FSMContext):
                     pass
                 return
 
-        # Генерация карточки
+        # ─── Генерация в отдельном потоке (не блокирует event loop) ───
         try:
             if mode == "meme":
-                card_bytes = card_generator.create_meme_with_photo(img_bytes, result)
+                card_bytes = await asyncio.to_thread(
+                    card_generator.create_meme_with_photo, img_bytes, result
+                )
             else:
-                card_bytes = card_generator.create_card(result, mode=mode)
+                card_bytes = await asyncio.to_thread(
+                    card_generator.create_card, result, mode
+                )
         except Exception as e:
             log.exception("Card error: %s", e)
             try:
@@ -494,7 +503,7 @@ async def handle_photo(message: Message, state: FSMContext):
                 pass
             return
 
-        # Caption по режимам
+        # Caption
         captions = {
             "toxic": f"🧪 Токсик: <b>{result.get('toxic', '—')}</b> | Флаги: <b>{result.get('flags', 0)}%</b>",
             "kent": f"😎 Кент: <b>{result.get('verdict', '—')}</b> | Уровень: <b>{result.get('kent_level', 0)}%</b>",
@@ -512,9 +521,9 @@ async def handle_photo(message: Message, state: FSMContext):
         }
         caption = captions.get(mode, "Готово!")
 
-        # Отправка с кнопкой «Поделиться»
+        # Отправка
         try:
-            pf = BufferedInputFile(card_bytes, filename="card.png")
+            pf = BufferedInputFile(card_bytes, filename="card.jpg")
             await message.answer_photo(photo=pf, caption=caption, reply_markup=_share_kb(mode))
             try:
                 await wait.delete()
