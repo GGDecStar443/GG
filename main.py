@@ -19,366 +19,276 @@ import database
 import llm_client
 import card_generator
 import monetization
+from prompts import MODES
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("mega_bot")
 
-bot = Bot(token=config.BOT_TOKEN,
-          default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-
 class Mode(StatesGroup):
-    toxic = State()
-    kent = State()
-    fortune = State()
-    meme = State()
+    waiting_photo = State()
+    admin_give_bonus = State()
 
-
-MODE_INFO = {
-    "toxic":   "🧪 Токсик-Чек",
-    "kent":    "😎 Кент-Чек",
-    "fortune": "🔮 Гадалка",
-    "meme":    "😂 Мем-Генератор",
-}
-
-WRONG_TYPE_MSG = (
-    "⚠️ <b>Я работаю только с картинками!</b>\n\n"
-    "Скинь <b>фото</b> (скрин переписки или селфи), а не видео / документ / музыку."
-)
-
-
-def _menu_kb():
+# Меню категорий
+def _main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧪 Токсик-Чек",    callback_data="m_toxic")],
-        [InlineKeyboardButton(text="😎 Кент-Чек",      callback_data="m_kent")],
-        [InlineKeyboardButton(text="🔮 Гадалка",       callback_data="m_fortune")],
-        [InlineKeyboardButton(text="😂 Мем-Генератор", callback_data="m_meme")],
+        [InlineKeyboardButton(text="📸 Анализ фото", callback_data="cat_photo")],
+        [InlineKeyboardButton(text="❤️ Отношения", callback_data="cat_love")],
+        [InlineKeyboardButton(text="🔮 Мистика", callback_data="cat_mystic")],
+        [InlineKeyboardButton(text="😂 Мемы", callback_data="cat_meme")],
+        [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")]
     ])
 
+def _cat_photo_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧪 Токсик-Чек", callback_data="m_toxic")],
+        [InlineKeyboardButton(text="😎 Кент-Чек", callback_data="m_kent")],
+        [InlineKeyboardButton(text="🤬 Уровень кринжа", callback_data="m_cringe")],
+        [InlineKeyboardButton(text="🕵️ Психопрофиль", callback_data="m_psycho")],
+        [InlineKeyboardButton(text="🔮 Узнать ауру", callback_data="m_aura")],
+        [InlineKeyboardButton(text="📱 Возраст по лицу", callback_data="m_age")],
+        [InlineKeyboardButton(text="💀 Уровень одиночества", callback_data="m_lonely")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
 
-async def _check_and_register(message: Message, referred_by: int = None):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    if referred_by == user_id:
-        referred_by = None
-    await database.register_user(user_id, username, referred_by)
-    if referred_by:
-        try:
-            await database.add_referral_bonus(referred_by)
-        except Exception as e:
-            log.warning("Referral bonus failed: %s", e)
+def _cat_love_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❤️ Анализатор отношений", callback_data="m_relationship")],
+        [InlineKeyboardButton(text="⚖️ Кто главный в переписке", callback_data="m_leader")],
+        [InlineKeyboardButton(text="🎯 Тип твоего краша", callback_data="m_crush")],
+        [InlineKeyboardButton(text="🌶️ Оценка флекса", callback_data="m_flex")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
 
+def _cat_mystic_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔮 Гадалка", callback_data="m_fortune")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
 
-@dp.errors()
-async def global_error_handler(event):
-    log.exception("Unhandled error: %s", event.exception)
-    update = event.update
-    try:
-        if update.message:
-            await update.message.answer(
-                "😅 Что-то пошло не так. Попробуй ещё раз или выбери режим заново:",
-                reply_markup=_menu_kb()
-            )
-        elif update.callback_query:
-            await update.callback_query.answer("Ошибка. Попробуй ещё раз.", show_alert=True)
-    except Exception as e:
-        log.error("Failed to send error message: %s", e)
+def _cat_meme_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="😂 Мем-Генератор", callback_data="m_meme")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+
+# Админ-меню
+def _admin_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Выдать попытки по ID", callback_data="admin_give")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")]
+    ])
+
+# Проверка подписки с уведомлением
+async def _require_subscription(message_or_cb):
+    is_sub = await monetization.is_subscribed(bot, message_or_cb.from_user.id)
+    if not is_sub:
+        kb = monetization.subscribe_kb()
+        text = "👋 <b>Ты отписался от канала!</b>\n\nПодпишись снова, чтобы пользоваться ботом."
+        if isinstance(message_or_cb, Message):
+            await message_or_cb.answer(text, reply_markup=kb)
+        else:
+            await message_or_cb.message.edit_text(text, reply_markup=kb)
+            await message_or_cb.answer()
+        return False
     return True
 
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    
+    # Рефералка
     args = message.text.split(maxsplit=1)
-    referred_by = None
+    ref_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
-        try: referred_by = int(args[1][4:])
-        except ValueError: pass
+        try: ref_by = int(args[1][4:])
+        except: pass
+    await database.register_user(message.from_user.id, message.from_user.username, ref_by)
+    if ref_by:
+        await database.add_referral_bonus(ref_by)
 
-    await _check_and_register(message, referred_by)
-
-    if not await monetization.is_subscribed(bot, message.from_user.id):
-        await message.answer(
-            "👋 <b>Чтобы пользоваться ботом — подпишись на наш канал.</b>\n\n"
-            "Это бесплатно и даёт доступ ко всем 4 режимам.",
-            reply_markup=monetization.subscribe_kb(),
-        )
-        return
+    if not await _require_subscription(message): return
 
     ref_count = await database.get_referral_count(message.from_user.id)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
+    
+    text = (f"👋 <b>Добро пожаловать в Mega-Bot!</b>\n\n"
+            f"Выбери категорию:\n\n"
+            f"🎁 Приглашено: <b>{ref_count}</b> друзей (+1 проверка)\n"
+            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>")
+    await message.answer(text, reply_markup=_main_menu_kb())
 
-    await message.answer(
-        "👋 <b>Мега-Бот</b>\n\n"
-        "Выбери режим:\n"
-        "🧪 <b>Токсик-Чек</b> — кто токсик в переписке\n"
-        "😎 <b>Кент-Чек</b> — что скажет твой кент\n"
-        "🔮 <b>Гадалка</b> — предсказание\n"
-        "😂 <b>Мем-Генератор</b> — мем из фото\n\n"
-        f"⚡ Лимит: {config.DAILY_LIMIT} проверок/день\n"
-        f"🎁 Приглашено друзей: <b>{ref_count}</b> (+1 проверка за каждого)\n\n"
-        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>",
-        reply_markup=_menu_kb(),
-    )
-
-
-@dp.callback_query(F.data == "check_sub")
-async def check_subscription(cb: CallbackQuery, state: FSMContext):
-    if await monetization.is_subscribed(bot, cb.from_user.id):
-        await cb.message.edit_text("✅ Спасибо за подписку!\n\nТеперь выбери режим:", reply_markup=_menu_kb())
-    else:
-        await cb.answer("Ты ещё не подписался 🤔", show_alert=True)
-
-
-@dp.callback_query(F.data.startswith("m_"))
-async def choose_mode(cb: CallbackQuery, state: FSMContext):
-    if not await monetization.is_subscribed(bot, cb.from_user.id):
-        await cb.answer("Сначала подпишись на канал!", show_alert=True)
-        return
-
-    mode = cb.data.split("_", 1)[1]
-    if mode not in MODE_INFO:
-        await cb.answer("Неизвестный режим")
-        return
-
-    await state.set_state(getattr(Mode, mode))
-    await cb.message.edit_text(f"<b>{MODE_INFO[mode]}</b>\n\nСкинь фото 👇")
+@dp.callback_query(F.data == "back_main")
+async def cb_back_main(cb: CallbackQuery):
+    if not await _require_subscription(cb): return
+    await cb.message.edit_text("Выбери категорию:", reply_markup=_main_menu_kb())
     await cb.answer()
 
+@dp.callback_query(F.data.startswith("cat_"))
+async def cb_category(cb: CallbackQuery):
+    if not await _require_subscription(cb): return
+    cat = cb.data.split("_")[1]
+    if cat == "photo":
+        await cb.message.edit_text("📸 <b>Анализ фото:</b>", reply_markup=_cat_photo_kb())
+    elif cat == "love":
+        await cb.message.edit_text("❤️ <b>Отношения:</b>", reply_markup=_cat_love_kb())
+    elif cat == "mystic":
+        await cb.message.edit_text("🔮 <b>Мистика:</b>", reply_markup=_cat_mystic_kb())
+    elif cat == "meme":
+        await cb.message.edit_text("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
+    await cb.answer()
 
-@dp.message(Command("toxic"))
-async def cmd_toxic(m: Message, state: FSMContext):
-    await state.set_state(Mode.toxic)
-    await m.answer("🧪 Скинь скрин переписки 👇")
-
-@dp.message(Command("kent"))
-async def cmd_kent(m: Message, state: FSMContext):
-    await state.set_state(Mode.kent)
-    await m.answer("😎 Скинь фото кента 👇")
-
-@dp.message(Command("fortune"))
-async def cmd_fortune(m: Message, state: FSMContext):
-    await state.set_state(Mode.fortune)
-    await m.answer("🔮 Скинь фото — погадаю 👇")
-
-@dp.message(Command("meme"))
-async def cmd_meme(m: Message, state: FSMContext):
-    await state.set_state(Mode.meme)
-    await m.answer("😂 Скинь фото — сделаю мем 👇")
-
-
-@dp.message(Command("myref"))
-async def cmd_myref(m: Message):
-    ref_count = await database.get_referral_count(m.from_user.id)
-    ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{m.from_user.id}"
-    await m.answer(
-        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n"
-        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-        f"За каждого друга: +{config.REFERRAL_BONUS} проверки (до +{config.REFERRAL_DAILY_LIMIT}/день)"
+@dp.callback_query(F.data == "invite")
+async def cb_invite(cb: CallbackQuery):
+    if not await _require_subscription(cb): return
+    ref_count = await database.get_referral_count(cb.from_user.id)
+    ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{cb.from_user.id}"
+    await cb.message.edit_text(
+        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n🔗 Твоя ссылка:\n<code>{ref_link}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]])
     )
+    await cb.answer()
 
+@dp.callback_query(F.data.startswith("m_"))
+async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
+    if not await _require_subscription(cb): return
+    mode = cb.data.split("_", 1)[1]
+    if mode not in MODES:
+        return await cb.answer("Неизвестный режим")
+    
+    await state.set_state(Mode.waiting_photo)
+    await state.update_data(mode=mode)
+    
+    await cb.message.edit_text(f"Режим: <b>{mode.upper()}</b>\n\nСкинь фото 👇")
+    await cb.answer()
 
-@dp.message(Command("stats"))
-async def cmd_stats(message: Message):
+# ─────────── АДМИНКА ───────────
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext):
     if message.from_user.id != config.ADMIN_ID:
-        await message.answer("⛔ Команда только для админа.")
         return
+    await message.answer("👑 <b>Админ-панель</b>", reply_markup=_admin_menu_kb())
 
+@dp.callback_query(F.data == "admin_give")
+async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != config.ADMIN_ID: return
+    await state.set_state(Mode.admin_give_bonus)
+    await cb.message.edit_text("Введи ID пользователя и количество попыток через пробел:\nПример: <code>123456789 10</code>")
+
+@dp.message(Mode.admin_give_bonus, F.text)
+async def process_admin_give(message: Message, state: FSMContext):
+    if message.from_user.id != config.ADMIN_ID: return
     try:
-        s = await database.get_full_stats()
-    except Exception as e:
-        log.exception("Stats error: %s", e)
-        await message.answer("Ошибка при сборе статистики.")
-        return
+        uid_str, amount_str = message.text.split()
+        uid, amount = int(uid_str), int(amount_str)
+        await database.add_bonus(uid, amount)
+        await message.answer(f"✅ Пользователю <code>{uid}</code> начислено <b>+{amount}</b> попыток.")
+        try:
+            await bot.send_message(uid, f"🎉 Тебе начислено <b>+{amount}</b> попыток! Спасибо за участие.")
+        except: pass
+    except:
+        await message.answer("❌ Ошибка. Введи в формате: <code>ID количество</code>")
+    await state.clear()
 
-    avg_cost = 0.08
-    est_cost = s["requests_total"] * avg_cost
-    mode_names = {"toxic": "🧪 Токсик", "kent": "😎 Кент", "fortune": "🔮 Гадалка", "meme": "😂 Мем"}
+@dp.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID: return
+    s = await database.get_full_stats()
+    text = (f"📊 Юзеров: {s['total_users']} | Запросов: {s['requests_total']}\n"
+            f"Сегодня: {s['requests_today']} | Новых: {s['new_today']}")
+    await cb.message.answer(text)
+    await cb.answer()
 
-    modes_text = "\n".join(
-        f"  {mode_names.get(m, m)}: <b>{c}</b>"
-        for m, c in sorted(s["by_mode"].items(), key=lambda x: -x[1])
-    ) or "  —"
-
-    top_users_text = "\n".join(
-        f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
-        for i, u in enumerate(s["top_users"])
-    ) or "  —"
-
-    top_ref_text = "\n".join(
-        f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
-        for i, u in enumerate(s["top_refs"])
-    ) or "  —"
-
-    text = (
-        "📊 <b>СТАТИСТИКА БОТА</b>\n\n"
-        f"👥 Всего юзеров: <b>{s['total_users']}</b>\n"
-        f"📅 Новых сегодня: <b>{s['new_today']}</b>\n"
-        f"🔥 Активных сегодня: <b>{s['active_today']}</b>\n\n"
-        f"📨 Запросов сегодня: <b>{s['requests_today']}</b>\n"
-        f"📨 Запросов всего: <b>{s['requests_total']}</b>\n"
-        f"💾 В кэше: <b>{s['cache_size']}</b>\n\n"
-        f"<b>По режимам:</b>\n{modes_text}\n\n"
-        f"<b>ТОП-5 активных:</b>\n{top_users_text}\n\n"
-        f"<b>ТОП-5 рефереров:</b>\n{top_ref_text}\n\n"
-        f"💰 Расход: <b>~{est_cost:.1f}₽</b> <i>(~0.08₽/запрос)</i>"
-    )
-    await message.answer(text)
-
-
-@dp.message(F.video | F.document | F.audio | F.voice | F.video_note | F.sticker | F.animation | F.contact | F.location | F.poll)
-async def handle_unsupported_content(message: Message):
-    await message.answer(WRONG_TYPE_MSG, reply_markup=_menu_kb())
-
-
-@dp.message(F.photo)
+# ─────────── ОБРАБОТКА ФОТО ───────────
+@dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
+    if not await _require_subscription(message): return
+
+    user_id = message.from_user.id
+    if not await database.can_make_request(user_id, config.DAILY_LIMIT):
+        await message.answer("🚫 Лимит исчерпан. Пригласи друга или купи подписку!")
+        return
+
+    data = await state.get_data()
+    mode = data.get("mode")
+    if not mode: return
+
+    tmp = None
     try:
-        if not await monetization.is_subscribed(bot, message.from_user.id):
-            await message.answer("👋 Сначала подпишись на канал.", reply_markup=monetization.subscribe_kb())
-            return
-
-        current = await state.get_state()
-        mode = None
-        for name in MODE_INFO:
-            if current == getattr(Mode, name).state:
-                mode = name
-                break
-
-        if not mode:
-            await message.answer("Сначала выбери режим:", reply_markup=_menu_kb())
-            return
-
-        if not await database.can_make_request(message.from_user.id, config.DAILY_LIMIT):
-            ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
-            await message.answer(
-                "🚫 Лимит на сегодня исчерпан.\n\n"
-                f"🎁 Пригласи друга и получи +{config.REFERRAL_BONUS} проверку:\n"
-                f"<code>{ref_link}</code>"
-            )
-            return
-
-        tmp = None
-        try:
-            photo = message.photo[-1]
-            if photo.file_size and photo.file_size > 20 * 1024 * 1024:
-                await message.answer("❌ Фото слишком большое (>20 МБ). Скинь поменьше.")
-                return
-            
-            file = await bot.get_file(photo.file_id)
-            fd, tmp = tempfile.mkstemp(suffix=".jpg")
-            os.close(fd)
-            await bot.download_file(file.file_path, destination=tmp)
-            
-            with open(tmp, "rb") as f:
-                image_bytes = f.read()
-                
-            if not image_bytes:
-                await message.answer("❌ Фото пустое. Попробуй другое.")
-                return
-        except Exception as e:
-            log.exception("Download error: %s", e)
-            await message.answer("❌ Не смог скачать фото. Попробуй ещё раз.")
-            return
-
-        wait = await message.answer("🔍 Анализирую…")
-
-        result = await database.get_cached(image_bytes, mode)
-        from_cache = result is not None
-
-        if not from_cache:
-            try:
-                result = await llm_client.analyze(image_bytes, mode=mode)
-                await database.save_cache(image_bytes, mode, result)
-            except Exception as e:
-                log.exception("LLM error: %s", e)
-                await wait.edit_text("😴 Бот устал, попробуй через минуту.")
-                return
-
-        try:
-            if mode == "meme":
-                card_bytes = card_generator.create_meme_with_photo(image_bytes, result)
-            else:
-                card_bytes = card_generator.create_card(result, mode=mode)
-        except Exception as e:
-            log.exception("Card error: %s", e)
-            await wait.edit_text("Не смог собрать карточку.")
-            return
-
-        if mode == "toxic":
-            caption = (f"🧪 <b>Токсик-Чек</b>\n\n"
-                       f"🚩 Флаги: <b>{result['flags']}%</b>\n"
-                       f"👤 Токсик: <b>{result['toxic']}</b>\n"
-                       f"💔 Тип: <b>{result['type']}</b>\n\n"
-                       f"💬 <b>Совет:</b> {result['advice']}\n\n"
-                       f"📝 {result['verdict']}")
-            score = int(result.get("flags", 0))
-        elif mode == "kent":
-            caption = (f"😎 <b>Кент-Чек</b>\n\n"
-                       f"🔥 Уровень: <b>{result['kent_level']}%</b>\n"
-                       f"💬 Вердикт: <b>«{result['verdict']}»</b>\n"
-                       f"🧠 Характер: <b>{result['character']}</b>\n\n"
-                       f"🔮 <b>Прогноз:</b> {result['prediction']}\n\n"
-                       f"💡 <b>Совет:</b> {result['advice']}")
-            score = int(result.get("kent_level", 0))
-        elif mode == "fortune":
-            caption = (f"🔮 <b>Гадалка</b>\n\n"
-                       f"✨ Предсказание: <b>«{result['prediction']}»</b>\n"
-                       f"🍀 Удача: <b>{result['luck']}%</b>\n\n"
-                       f"💕 <b>Любовь:</b> {result['love']}\n"
-                       f"💰 <b>Деньги:</b> {result['money']}\n\n"
-                       f"✨ <b>Совет:</b> {result['advice']}")
-            score = int(result.get("luck", 0))
-        else:
-            caption = (f"😂 <b>Мем-Генератор</b>\n\n"
-                       f"⬆️ {result['top']}\n"
-                       f"⬇️ {result['bottom']}\n\n"
-                       f"#{result['hashtag']} • {result['genre']}")
-            score = 0
-
-        try:
-            pf = BufferedInputFile(card_bytes, filename=f"{mode}.png")
-            await message.answer_photo(photo=pf, caption=caption)
-            await wait.delete()
-        except TelegramAPIError as e:
-            log.exception("Send error: %s", e)
-            await wait.edit_text("Не смог отправить результат.")
-
-        if not from_cache:
-            try:
-                await database.log_request(message.from_user.id, score, mode)
-            except Exception as e:
-                log.exception("DB log error: %s", e)
-
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        fd, tmp = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        await bot.download_file(file.file_path, destination=tmp)
+        with open(tmp, "rb") as f:
+            img_bytes = f.read()
     except Exception as e:
-        log.exception("Unhandled error in handle_photo: %s", e)
-        try:
-            await message.answer("😅 Что-то пошло не так. Попробуй ещё раз.")
-        except Exception:
-            pass
-    finally:
-        if tmp and os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
+        return await message.answer("Ошибка скачивания.")
 
+    wait = await message.answer("🔍 Анализирую...")
+
+    result = await database.get_cached(img_bytes, mode)
+    from_cache = result is not None
+
+    if not from_cache:
+        try:
+            result = await llm_client.analyze(img_bytes, mode=mode)
+            await database.save_cache(img_bytes, mode, result)
+        except Exception as e:
+            log.error(e)
+            return await wait.edit_text("😴 Бот устал...")
+
+    try:
+        if mode == "meme":
+            card_bytes = card_generator.create_meme_with_photo(img_bytes, result)
+        else:
+            card_bytes = card_generator.create_card(result, mode=mode)
+    except Exception:
+        return await wait.edit_text("Ошибка карточки.")
+
+    # Формирование текста
+    captions = {
+        "toxic": f"🧪 Токсик: {result.get('toxic')} | Флаги: {result.get('flags')}%",
+        "kent": f"😎 Кент: {result.get('verdict')} | Уровень: {result.get('kent_level')}%",
+        "fortune": f"🔮 Удача: {result.get('luck')}% | {result.get('prediction')}",
+        "cringe": f"🤬 Кринж: {result.get('cringe')}% | {result.get('verdict')}",
+        "flex": f"🌶️ Флекс: {result.get('flex')}% | {result.get('verdict')}",
+        "psycho": f"🕵️ Тип: {result.get('type')} | {result.get('character')}",
+        "aura": f"🔮 Аура: {result.get('color')} | {result.get('meaning')}",
+        "age": f"📱 Возраст: {result.get('age')} | Ментальный: {result.get('mental')}",
+        "relationship": f"❤️ Совместимость: {result.get('compat')}% | Главный: {result.get('leader')}",
+        "crush": f"🎯 Тип: {result.get('type')} | Ищет: {result.get('seeks')}",
+        "leader": f"⚖️ Главный: {result.get('leader')} | Баланс: {result.get('balance')}%",
+        "lonely": f"💀 Одиночество: {result.get('lonely')}% | {result.get('status')}",
+        "meme": f"😂 Мем готов!"
+    }
+    caption = captions.get(mode, "Готово!")
+
+    try:
+        pf = BufferedInputFile(card_bytes, filename="card.png")
+        await message.answer_photo(photo=pf, caption=caption)
+        await wait.delete()
+        if not from_cache:
+            score = result.get("flags", result.get("compat", 0))
+            await database.log_request(user_id, score, mode)
+    except Exception as e:
+        await wait.edit_text("Ошибка отправки.")
+
+    await state.clear()
+    if tmp and os.path.exists(tmp): os.remove(tmp)
 
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
-    await message.answer("Выбери режим:", reply_markup=_menu_kb())
-
+    await message.answer("Выбери действие через меню /start")
 
 async def main():
     await database.init_db()
-    log.info("Mega bot started. Model=%s | Channel=%s",
-             config.LLM_MODEL, config.REQUIRED_CHANNEL or "OFF")
+    log.info("Bot started.")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        log.info("Bot stopped.")
+    asyncio.run(main())
