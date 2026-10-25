@@ -1,4 +1,3 @@
-# Проверка подписки на обязательный канал
 import logging
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,6 +25,7 @@ async def is_subscribed(bot: Bot, user_id: int) -> bool:
         return member.status in ("member", "administrator", "creator")
     except TelegramBadRequest as e:
         log.warning("Subscription check failed: %s", e)
+        # Если бот не админ канала — не блокируем юзера
         return True
     except Exception as e:
         log.exception("Subscription check error: %s", e)
