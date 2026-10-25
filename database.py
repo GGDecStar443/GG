@@ -1,4 +1,4 @@
-# База: юзеры, запросы, кэш, рефералка, статистика, бонусы, баны
+# База: юзеры, запросы, кэш, рефералка, статистика, бонусы, баны, приватность
 import aiosqlite
 import hashlib
 import json
@@ -27,7 +27,8 @@ async def init_db():
                 bonus_today INTEGER DEFAULT 0,
                 bonus_date DATE,
                 last_daily_bonus DATE,
-                points INTEGER DEFAULT 0
+                points INTEGER DEFAULT 0,
+                privacy_accepted BOOLEAN DEFAULT 0
             )
         """)
         await db.execute("""
@@ -71,6 +72,7 @@ async def _migrate_users_table(db):
         "bonus_date": "ALTER TABLE users ADD COLUMN bonus_date DATE",
         "last_daily_bonus": "ALTER TABLE users ADD COLUMN last_daily_bonus DATE",
         "points": "ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 0",
+        "privacy_accepted": "ALTER TABLE users ADD COLUMN privacy_accepted BOOLEAN DEFAULT 0",
     }
     for col, sql in migrations.items():
         if col not in columns:
@@ -91,6 +93,33 @@ async def register_user(user_id: int, username, referred_by=None):
         await db.commit()
 
 
+# ─────────── ПРИВАТНОСТЬ ───────────
+async def is_privacy_accepted(user_id: int) -> bool:
+    """Проверяет, принял ли юзер политику конфиденциальности."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT privacy_accepted FROM users WHERE user_id=?",
+            (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return bool(row and row[0])
+
+
+async def set_privacy_accepted(user_id: int):
+    """Отмечает, что юзер принял политику."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+            (user_id,)
+        )
+        await db.execute(
+            "UPDATE users SET privacy_accepted=1 WHERE user_id=?",
+            (user_id,)
+        )
+        await db.commit()
+
+
+# ─────────── ЗАПРОСЫ И ЛИМИТЫ ───────────
 async def get_today_requests(user_id: int) -> int:
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -143,6 +172,7 @@ async def add_referral_bonus(user_id: int) -> bool:
 
 
 async def add_bonus(user_id: int, amount: int):
+    """Админская выдача бонусных попыток."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)) as cur:
@@ -159,6 +189,7 @@ async def add_bonus(user_id: int, amount: int):
 
 
 async def check_daily_bonus(user_id: int) -> bool:
+    """Даёт +1 бонус, если сегодня ещё не брал."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
@@ -220,6 +251,7 @@ async def save_cache(image_bytes: bytes, mode: str, result: dict):
         await db.commit()
 
 
+# ─────────── РЕФЕРАЛКА ───────────
 async def get_referral_count(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -231,6 +263,7 @@ async def get_referral_count(user_id: int) -> int:
 
 
 async def get_weekly_top() -> list:
+    """Топ-10 юзеров по активности за 7 дней. Возвращает только username/ID."""
     seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
