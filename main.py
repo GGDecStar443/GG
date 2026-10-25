@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + UX + админка + защита (ФИНАЛ)
+# Мега-бот: 13 режимов + UX + юридика + админка + защита
 import asyncio
 import logging
 import os
@@ -110,6 +110,42 @@ def _is_spam_text(text: str) -> bool:
 
 
 # ═══════════════════════════════════════════
+# ПРИВАТНОСТЬ И ЮРИДИКА
+# ═══════════════════════════════════════════
+PRIVACY_TEXT = (
+    "📄 <b>Политика конфиденциальности и правила</b>\n\n"
+    "Используя этого бота, вы соглашаетесь со следующим:\n\n"
+    "1️⃣ <b>Какие данные мы собираем:</b>\n"
+    "• Ваш Telegram ID и username\n"
+    "• Отправленные фото (только для обработки, не хранятся долго)\n"
+    "• Результаты анализа\n\n"
+    "2️⃣ <b>Как используем:</b>\n"
+    "• Только для работы бота\n"
+    "• Не передаём третьим лицам\n"
+    "• Не храним фото после обработки (удаляются сразу)\n\n"
+    "3️⃣ <b>Важно:</b>\n"
+    "• <b>Скрывайте личные данные</b> на скриншотах (номера телефонов, адреса, ФИО, номера карт)\n"
+    "• Бот использует AI для анализа — ответы <b>не являются</b> медицинской или психологической консультацией\n"
+    "• Все результаты — <b>шутливые</b> и не несут юридической силы\n\n"
+    "4️⃣ <b>Ваши права:</b>\n"
+    "• Вы можете запросить удаление данных\n"
+    f"• Написать админу: {config.ADMIN_URL}\n\n"
+    "5️⃣ <b>Согласие:</b>\n"
+    "• Нажмите «✅ Согласен», чтобы продолжить\n"
+    "• Если не согласны — покиньте бота\n\n"
+    f"📅 Дата: 2026 г.\n"
+    f"🔗 Админ: {config.ADMIN_URL}"
+)
+
+
+def _privacy_accept_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Согласен с правилами", callback_data="accept_privacy")],
+        [InlineKeyboardButton(text="❌ Не согласен", callback_data="decline_privacy")],
+    ])
+
+
+# ═══════════════════════════════════════════
 # КЛАВИАТУРЫ
 # ═══════════════════════════════════════════
 def _main_menu_kb():
@@ -122,6 +158,7 @@ def _main_menu_kb():
         [InlineKeyboardButton(text="🏆 Топ недели", callback_data="top_week")],
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")],
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")],
+        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
     ])
 
 def _cat_photo_kb():
@@ -243,7 +280,7 @@ async def global_error_handler(event):
 
 
 # ═══════════════════════════════════════════
-# СТАРТ
+# СТАРТ (с согласием на политику)
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -255,6 +292,12 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer("🚫 Ты забанен навсегда за нарушения. Обратись к админу.")
         else:
             await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
+        return
+
+    # Проверяем, согласился ли юзер с политикой
+    accepted = await database.is_privacy_accepted(message.from_user.id)
+    if not accepted:
+        await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
         return
 
     args = message.text.split(maxsplit=1)
@@ -277,7 +320,6 @@ async def cmd_start(message: Message, state: FSMContext):
     if not await _require_subscription(message):
         return
 
-    # Ежедневный бонус
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
 
@@ -296,6 +338,38 @@ async def cmd_start(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=_main_menu_kb())
 
 
+@dp.callback_query(F.data == "accept_privacy")
+async def cb_accept_privacy(cb: CallbackQuery, state: FSMContext):
+    await database.set_privacy_accepted(cb.from_user.id)
+    await cb.message.edit_text(
+        "✅ <b>Спасибо! Правила приняты.</b>\n\n"
+        "Нажми /start, чтобы начать.",
+    )
+    await cb.answer("Добро пожаловать!")
+
+
+@dp.callback_query(F.data == "decline_privacy")
+async def cb_decline_privacy(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "❌ <b>Без согласия с правилами бот не работает.</b>\n\n"
+        "Если передумаешь — нажми /start."
+    )
+    await cb.answer()
+
+
+@dp.callback_query(F.data == "privacy")
+async def cb_privacy(cb: CallbackQuery):
+    try:
+        await cb.message.edit_text(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    except TelegramAPIError:
+        await cb.message.answer(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    await cb.answer()
+
+
 # ═══════════════════════════════════════════
 # HELP
 # ═══════════════════════════════════════════
@@ -309,30 +383,35 @@ HELP_TEXT = (
     "   • ❤️ Отношения → <b>фото с партнёром</b>\n"
     "3️⃣ Получи карточку за 5-10 сек\n"
     "4️⃣ Поделись с другом\n\n"
+    "⚠️ <b>ВАЖНО:</b>\n"
+    "• <b>Скрывай</b> номера телефонов, ФИО, адреса, номера карт на скринах!\n"
+    "• Бот <b>не хранит</b> фото после обработки\n"
+    "• Результаты — <b>шутливые</b>, не являются консультацией\n\n"
     f"⚡ <b>Лимит:</b> {config.DAILY_LIMIT} проверок/день\n"
     "🎁 <b>За друга:</b> +1 проверка\n"
     "🏆 <b>Топ недели:</b> соревнуйся с другими\n\n"
-    "❓ <b>Есть вопрос?</b> Напиши админу: /myref — узнать свою ссылку"
+    f"❓ <b>Есть вопрос?</b> Пиши админу: {config.ADMIN_URL}"
 )
 
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")],
     ]))
 
 
 @dp.callback_query(F.data == "help")
 async def cb_help(cb: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+    ])
     try:
-        await cb.message.edit_text(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
-        ]))
+        await cb.message.edit_text(HELP_TEXT, reply_markup=kb)
     except TelegramAPIError:
-        await cb.message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
-        ]))
+        await cb.message.answer(HELP_TEXT, reply_markup=kb)
     await cb.answer()
 
 
@@ -469,7 +548,11 @@ async def cb_top_week(cb: CallbackQuery):
     else:
         lines = []
         for i, (username, user_id, cnt) in enumerate(top, 1):
-            name = f"@{username}" if username else f"User#{user_id}"
+            # Показываем ТОЛЬКО ник (или "Аноним" если ника нет)
+            if username and username.strip():
+                name = f"@{username}"
+            else:
+                name = "Аноним"
             lines.append(f"  {i}. <b>{name}</b> — {cnt} проверок")
         text = "🏆 <b>Топ-10 недели:</b>\n\n" + "\n".join(lines) + "\n\n<i>Проверок за последние 7 дней</i>"
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -577,7 +660,7 @@ async def cb_admin_stats(cb: CallbackQuery):
             for m, c in sorted(s["by_mode"].items(), key=lambda x: -x[1])
         ) or "  —"
         top_users_text = "\n".join(
-            f"  {i+1}. @{u[0] or u[1]} — {u[2]}"
+            f"  {i+1}. @{u[0] if u[0] else 'Аноним'} — {u[2]}"
             for i, u in enumerate(s["top_users"])
         ) or "  —"
         text = (
@@ -687,7 +770,7 @@ async def handle_unsupported_content(message: Message):
 
 
 # ═══════════════════════════════════════════
-# ОБРАБОТЧИК ФОТО
+# ОБРАБОТЧИК ФОТО (с фиксом "токсик не забирает")
 # ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
@@ -806,7 +889,8 @@ async def handle_photo(message: Message, state: FSMContext):
                 await wait.delete()
             except Exception:
                 pass
-            # ─── БЕЗОПАСНЫЙ score ───
+
+            # ─── БЕЗОПАСНЫЙ score + проверка на "не списывать если 0" ───
             if not from_cache:
                 score_field = MODE_SCORE_FIELD.get(mode)
                 raw = result.get(score_field, 0) if score_field else 0
@@ -814,7 +898,23 @@ async def handle_photo(message: Message, state: FSMContext):
                     score = int(raw) if raw else 0
                 except (ValueError, TypeError):
                     score = 0
-                await database.log_request(user_id, score, mode)
+                
+                # Логика "не забирать проверку":
+                # - Для токсика: если flags == 0 → не логируем (не тратим)
+                # - Для остальных: логируем всегда
+                should_log = True
+                if mode == "toxic" and score == 0:
+                    should_log = False
+                
+                if should_log:
+                    await database.log_request(user_id, score, mode)
+                else:
+                    await message.answer(
+                        "🎁 <b>Бот не смог распознать переписку</b>, "
+                        "поэтому <b>проверка НЕ была списана</b>.\n\n"
+                        "Попробуй скинуть более чёткий скрин."
+                    )
+
         except TelegramAPIError as e:
             log.exception("Send error: %s", e)
             try:
