@@ -163,36 +163,43 @@ async def get_full_stats() -> dict:
     today = date.today().isoformat()
 
     async with aiosqlite.connect(DB_PATH) as db:
+        # Всего юзеров
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             total_users = (await cur.fetchone())[0]
 
+        # Новых сегодня
         async with db.execute(
             "SELECT COUNT(*) FROM users WHERE DATE(first_seen) = ?", (today,)
         ) as cur:
             new_today = (await cur.fetchone())[0]
 
+        # Активных сегодня
         async with db.execute(
             "SELECT COUNT(DISTINCT user_id) FROM requests WHERE date = ?", (today,)
         ) as cur:
             active_today = (await cur.fetchone())[0]
 
+        # Запросов сегодня
         async with db.execute(
             "SELECT COUNT(*) FROM requests WHERE date = ?", (today,)
         ) as cur:
             requests_today = (await cur.fetchone())[0]
 
+        # Запросов всего
         async with db.execute("SELECT COUNT(*) FROM requests") as cur:
             requests_total = (await cur.fetchone())[0]
 
+        # По режимам
         async with db.execute(
             "SELECT mode, COUNT(*) FROM requests GROUP BY mode"
         ) as cur:
             by_mode_rows = await cur.fetchall()
 
+        # Кэш
         async with db.execute("SELECT COUNT(*) FROM cache") as cur:
             cache_size = (await cur.fetchone())[0]
 
-        # ТОП-5 активных юзеров
+        # ТОП-5 активных
         async with db.execute("""
             SELECT u.username, u.user_id, COUNT(r.id) as cnt
             FROM users u
@@ -223,5 +230,5 @@ async def get_full_stats() -> dict:
         "by_mode": dict(by_mode_rows),
         "cache_size": cache_size,
         "top_users": top_users,
-        "top_referrers": top_referrers,
+        "top_refs": top_referrers,
     }
