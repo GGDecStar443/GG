@@ -1,4 +1,3 @@
-# Мега-бот: 4 режима + защита от всех типов контента
 import asyncio
 import logging
 import os
@@ -44,7 +43,6 @@ MODE_INFO = {
     "meme":    "😂 Мем-Генератор",
 }
 
-# Сообщение для неправильных типов контента
 WRONG_TYPE_MSG = (
     "⚠️ <b>Я работаю только с картинками!</b>\n\n"
     "Скинь <b>фото</b> (скрин переписки или селфи), а не видео / документ / музыку."
@@ -73,18 +71,9 @@ async def _check_and_register(message: Message, referred_by: int = None):
             log.warning("Referral bonus failed: %s", e)
 
 
-# ═══════════════════════════════════════════
-# ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК ОШИБОК
-# ═══════════════════════════════════════════
 @dp.errors()
 async def global_error_handler(event):
-    """
-    Ловит ВСЕ необработанные ошибки.
-    Бот никогда не падает — юзер получает вежливое сообщение.
-    """
     log.exception("Unhandled error: %s", event.exception)
-    
-    # Пытаемся ответить юзеру
     update = event.update
     try:
         if update.message:
@@ -96,24 +85,17 @@ async def global_error_handler(event):
             await update.callback_query.answer("Ошибка. Попробуй ещё раз.", show_alert=True)
     except Exception as e:
         log.error("Failed to send error message: %s", e)
-    
-    return True  # Ошибка обработана
+    return True
 
 
-# ═══════════════════════════════════════════
-# СТАРТ
-# ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-
     args = message.text.split(maxsplit=1)
     referred_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
-        try:
-            referred_by = int(args[1][4:])
-        except ValueError:
-            pass
+        try: referred_by = int(args[1][4:])
+        except ValueError: pass
 
     await _check_and_register(message, referred_by)
 
@@ -171,18 +153,15 @@ async def cmd_toxic(m: Message, state: FSMContext):
     await state.set_state(Mode.toxic)
     await m.answer("🧪 Скинь скрин переписки 👇")
 
-
 @dp.message(Command("kent"))
 async def cmd_kent(m: Message, state: FSMContext):
     await state.set_state(Mode.kent)
     await m.answer("😎 Скинь фото кента 👇")
 
-
 @dp.message(Command("fortune"))
 async def cmd_fortune(m: Message, state: FSMContext):
     await state.set_state(Mode.fortune)
     await m.answer("🔮 Скинь фото — погадаю 👇")
-
 
 @dp.message(Command("meme"))
 async def cmd_meme(m: Message, state: FSMContext):
@@ -203,7 +182,6 @@ async def cmd_myref(m: Message):
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: Message):
-    """Полная статистика — только для админа."""
     if message.from_user.id != config.ADMIN_ID:
         await message.answer("⛔ Команда только для админа.")
         return
@@ -217,13 +195,7 @@ async def cmd_stats(message: Message):
 
     avg_cost = 0.08
     est_cost = s["requests_total"] * avg_cost
-
-    mode_names = {
-        "toxic": "🧪 Токсик",
-        "kent": "😎 Кент",
-        "fortune": "🔮 Гадалка",
-        "meme": "😂 Мем",
-    }
+    mode_names = {"toxic": "🧪 Токсик", "kent": "😎 Кент", "fortune": "🔮 Гадалка", "meme": "😂 Мем"}
 
     modes_text = "\n".join(
         f"  {mode_names.get(m, m)}: <b>{c}</b>"
@@ -256,27 +228,18 @@ async def cmd_stats(message: Message):
     await message.answer(text)
 
 
-# ═══════════════════════════════════════════
-# ЗАЩИТА: ОТВЕЧАЕМ НА ВСЕ ДРУГИЕ ТИПЫ КОНТЕНТА
-# ═══════════════════════════════════════════
 @dp.message(F.video | F.document | F.audio | F.voice | F.video_note | F.sticker | F.animation | F.contact | F.location | F.poll)
 async def handle_unsupported_content(message: Message):
-    """Ловит видео, документы, музыку, стикеры, гифки, голосовые и т.д."""
     await message.answer(WRONG_TYPE_MSG, reply_markup=_menu_kb())
 
 
-# ═══════════════════════════════════════════
-# ОСНОВНОЙ ОБРАБОТЧИК ФОТО
-# ═══════════════════════════════════════════
 @dp.message(F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     try:
-        # Проверка подписки
         if not await monetization.is_subscribed(bot, message.from_user.id):
             await message.answer("👋 Сначала подпишись на канал.", reply_markup=monetization.subscribe_kb())
             return
 
-        # Определение режима
         current = await state.get_state()
         mode = None
         for name in MODE_INFO:
@@ -288,7 +251,6 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.answer("Сначала выбери режим:", reply_markup=_menu_kb())
             return
 
-        # Проверка лимита
         if not await database.can_make_request(message.from_user.id, config.DAILY_LIMIT):
             ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
             await message.answer(
@@ -298,12 +260,9 @@ async def handle_photo(message: Message, state: FSMContext):
             )
             return
 
-        # Скачивание фото (с защитой)
         tmp = None
         try:
             photo = message.photo[-1]
-            
-            # Проверка размера (Telegram и так не даст >20MB, но на всякий)
             if photo.file_size and photo.file_size > 20 * 1024 * 1024:
                 await message.answer("❌ Фото слишком большое (>20 МБ). Скинь поменьше.")
                 return
@@ -318,18 +277,14 @@ async def handle_photo(message: Message, state: FSMContext):
                 
             if not image_bytes:
                 await message.answer("❌ Фото пустое. Попробуй другое.")
-                if tmp and os.path.exists(tmp): os.remove(tmp)
                 return
-                
         except Exception as e:
             log.exception("Download error: %s", e)
             await message.answer("❌ Не смог скачать фото. Попробуй ещё раз.")
-            if tmp and os.path.exists(tmp): os.remove(tmp)
             return
 
         wait = await message.answer("🔍 Анализирую…")
 
-        # Кэш
         result = await database.get_cached(image_bytes, mode)
         from_cache = result is not None
 
@@ -340,19 +295,18 @@ async def handle_photo(message: Message, state: FSMContext):
             except Exception as e:
                 log.exception("LLM error: %s", e)
                 await wait.edit_text("😴 Бот устал, попробуй через минуту.")
-                if tmp and os.path.exists(tmp): os.remove(tmp)
                 return
 
-        # Генерация карточки
         try:
-            card_bytes = card_generator.create_card(result, mode=mode)
+            if mode == "meme":
+                card_bytes = card_generator.create_meme_with_photo(image_bytes, result)
+            else:
+                card_bytes = card_generator.create_card(result, mode=mode)
         except Exception as e:
             log.exception("Card error: %s", e)
             await wait.edit_text("Не смог собрать карточку.")
-            if tmp and os.path.exists(tmp): os.remove(tmp)
             return
 
-        # Формирование caption
         if mode == "toxic":
             caption = (f"🧪 <b>Токсик-Чек</b>\n\n"
                        f"🚩 Флаги: <b>{result['flags']}%</b>\n"
@@ -384,7 +338,6 @@ async def handle_photo(message: Message, state: FSMContext):
                        f"#{result['hashtag']} • {result['genre']}")
             score = 0
 
-        # Отправка
         try:
             pf = BufferedInputFile(card_bytes, filename=f"{mode}.png")
             await message.answer_photo(photo=pf, caption=caption)
@@ -393,7 +346,6 @@ async def handle_photo(message: Message, state: FSMContext):
             log.exception("Send error: %s", e)
             await wait.edit_text("Не смог отправить результат.")
 
-        # Логирование
         if not from_cache:
             try:
                 await database.log_request(message.from_user.id, score, mode)
@@ -401,22 +353,17 @@ async def handle_photo(message: Message, state: FSMContext):
                 log.exception("DB log error: %s", e)
 
     except Exception as e:
-        # Финальная защита — если что-то упало, юзер получит ответ, а не "тишину"
         log.exception("Unhandled error in handle_photo: %s", e)
         try:
             await message.answer("😅 Что-то пошло не так. Попробуй ещё раз.")
         except Exception:
             pass
     finally:
-        # Гарантированная очистка временного файла
         if tmp and os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
 
 
-# ═══════════════════════════════════════════
-# ОБРАБОТЧИК ЛЮБОГО ТЕКСТА (в самом конце)
-# ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     await message.answer("Выбери режим:", reply_markup=_menu_kb())
