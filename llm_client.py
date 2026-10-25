@@ -1,4 +1,4 @@
-# LLM-клиент (VseGPT, сжатие в отдельном потоке)
+# LLM-клиент (VseGPT, сжатие в потоке, семафор на 20 запросов)
 import base64
 import io
 import asyncio
@@ -7,21 +7,18 @@ from PIL import Image
 from config import LLM_API_KEY, LLM_API_URL, LLM_MODEL
 from prompts import MODES, PARSERS
 
+# Семафор — не более 20 одновременных запросов к VseGPT
+_api_semaphore = asyncio.Semaphore(20)
+
 
 def _compress_sync(image_bytes: bytes, max_side: int = 384, quality: int = 65) -> bytes:
-    """
-    Сжимает фото — БЫСТРАЯ версия:
-    - 384px (вместо 512) — текст на скринах всё ещё читается
-    - quality 65 — незаметно для AI
-    Экономия токенов ~40% и CPU ~30%.
-    """
     try:
         img = Image.open(io.BytesIO(image_bytes))
-        img.thumbnail((max_side, max_side), Image.BILINEAR)  # BILINEAR быстрее LANCZOS
+        img.thumbnail((max_side, max_side), Image.BILINEAR)
         if img.mode != "RGB":
             img = img.convert("RGB")
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality, optimize=False)  # optimize=False — быстрее
+        img.save(buf, format="JPEG", quality=quality, optimize=False)
         return buf.getvalue()
     except Exception:
         return image_bytes
@@ -34,7 +31,6 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
     prompt = MODES[mode]
     parser = PARSERS[mode]
 
-    # Сжатие в отдельном потоке — не блокирует event loop
     image_bytes = await asyncio.to_thread(_compress_sync, image_bytes)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -47,7 +43,7 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ],
         }],
-        "max_tokens": 250,     # меньше токенов → быстрее ответ
+        "max_tokens": 250,
         "temperature": 0.7,
     }
     headers = {
@@ -55,11 +51,13 @@ async def analyze(image_bytes: bytes, mode: str) -> dict:
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=45) as client:
-        resp = await client.post(LLM_API_URL, json=payload, headers=headers)
-        if resp.status_code != 200:
-            raise RuntimeError(f"LLM API {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+    # Семафор — не больше 20 одновременных запросов
+    async with _api_semaphore:
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.post(LLM_API_URL, json=payload, headers=headers)
+            if resp.status_code != 200:
+                raise RuntimeError(f"LLM API {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
 
     raw = data["choices"][0]["message"]["content"] or ""
     return parser(raw.strip())
