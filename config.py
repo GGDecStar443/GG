@@ -5,6 +5,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "your_bot")
+BOT_LINK = f"https://t.me/{BOT_USERNAME}"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 LLM_API_KEY = os.getenv("LLM_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
@@ -12,8 +13,6 @@ LLM_API_URL = os.getenv("LLM_API_URL", "https://api.vsegpt.ru/v1/chat/completion
 LLM_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-haiku-5.5")
 
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "5"))
-
-# Переменные для базы (рефералка)
 REFERRAL_BONUS = int(os.getenv("REFERRAL_BONUS", "1"))
 REFERRAL_DAILY_LIMIT = int(os.getenv("REFERRAL_DAILY_LIMIT", "10"))
 
