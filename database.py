@@ -8,7 +8,6 @@ from config import DB_PATH, REFERRAL_BONUS, REFERRAL_DAILY_LIMIT
 
 
 async def init_db():
-    # Создаём папку для базы, если её нет (критично для /data)
     db_dir = os.path.dirname(DB_PATH)
     if db_dir and not os.path.exists(db_dir):
         try:
@@ -37,7 +36,8 @@ async def init_db():
                 user_id INTEGER,
                 date DATE,
                 mode TEXT,
-                score INTEGER
+                score INTEGER,
+                is_success BOOLEAN DEFAULT 1
             )
         """)
         await db.execute("""
@@ -57,13 +57,13 @@ async def init_db():
                 reason TEXT
             )
         """)
-        # Миграция старых баз
+        # Миграции
         await _migrate_users_table(db)
+        await _migrate_requests_table(db)
         await db.commit()
 
 
 async def _migrate_users_table(db):
-    """Добавляет колонки в users, если их нет (для старых баз)."""
     async with db.execute("PRAGMA table_info(users)") as cur:
         columns = [row[1] for row in await cur.fetchall()]
     migrations = {
@@ -82,6 +82,19 @@ async def _migrate_users_table(db):
                 pass
 
 
+async def _migrate_requests_table(db):
+    """Добавляет колонку is_success, если её нет (для старых баз)."""
+    async with db.execute("PRAGMA table_info(requests)") as cur:
+        columns = [row[1] for row in await cur.fetchall()]
+    if "is_success" not in columns:
+        try:
+            await db.execute("ALTER TABLE requests ADD COLUMN is_success BOOLEAN DEFAULT 1")
+            # Всем старым запросам ставим успешные
+            await db.execute("UPDATE requests SET is_success = 1 WHERE is_success IS NULL")
+        except Exception:
+            pass
+
+
 async def register_user(user_id: int, username, referred_by=None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -95,7 +108,6 @@ async def register_user(user_id: int, username, referred_by=None):
 
 # ─────────── ПРИВАТНОСТЬ ───────────
 async def is_privacy_accepted(user_id: int) -> bool:
-    """Проверяет, принял ли юзер политику конфиденциальности."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT privacy_accepted FROM users WHERE user_id=?",
@@ -106,7 +118,6 @@ async def is_privacy_accepted(user_id: int) -> bool:
 
 
 async def set_privacy_accepted(user_id: int):
-    """Отмечает, что юзер принял политику."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
@@ -121,10 +132,11 @@ async def set_privacy_accepted(user_id: int):
 
 # ─────────── ЗАПРОСЫ И ЛИМИТЫ ───────────
 async def get_today_requests(user_id: int) -> int:
+    """Считает ТОЛЬКО успешные запросы (is_success=1)."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT COUNT(*) FROM requests WHERE user_id=? AND date=?",
+            "SELECT COUNT(*) FROM requests WHERE user_id=? AND date=? AND is_success=1",
             (user_id, today),
         ) as cur:
             row = await cur.fetchone()
@@ -172,37 +184,61 @@ async def add_referral_bonus(user_id: int) -> bool:
 
 
 async def add_bonus(user_id: int, amount: int):
-    """Админская выдача бонусных попыток."""
+    """
+    Админская выдача бонусов.
+    ВАЖНО: bonus_today привязан к дате. На следующий день сбрасывается.
+    """
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,)) as cur:
             if not await cur.fetchone():
                 await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        
         async with db.execute("SELECT bonus_today, bonus_date FROM users WHERE user_id=?", (user_id,)) as cur:
             row = await cur.fetchone()
+        
         current_bonus = 0
         if row and row[1] == today:
             current_bonus = row[0] or 0
+        
         new_bonus = current_bonus + amount
-        await db.execute("UPDATE users SET bonus_today=?, bonus_date=? WHERE user_id=?", (new_bonus, today, user_id))
+        
+        await db.execute(
+            "UPDATE users SET bonus_today=?, bonus_date=? WHERE user_id=?",
+            (new_bonus, today, user_id)
+        )
         await db.commit()
 
 
 async def check_daily_bonus(user_id: int) -> bool:
-    """Даёт +1 бонус, если сегодня ещё не брал."""
+    """
+    Даёт +1 бонус за вход, если сегодня ещё не брал.
+    НЕ перезаписывает существующий бонус из админки.
+    """
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
+        async with db.execute("SELECT last_daily_bonus, bonus_today, bonus_date FROM users WHERE user_id=?", (user_id,)) as cur:
             row = await cur.fetchone()
-        if not row or row[0] != today:
-            await db.execute("UPDATE users SET last_daily_bonus=? WHERE user_id=?", (today, user_id))
-            await db.execute(
-                "UPDATE users SET bonus_today = bonus_today + 1, bonus_date = ? WHERE user_id = ?",
-                (today, user_id)
-            )
-            await db.commit()
-            return True
-        return False
+        
+        if not row:
+            return False
+        
+        last_daily, current_bonus, current_date = row
+        
+        # Если сегодня уже брал — не даём
+        if last_daily == today:
+            return False
+        
+        # Считаем бонус: если bonus_date = сегодня — прибавляем к текущему, иначе 1
+        base = (current_bonus or 0) if current_date == today else 0
+        new_bonus = base + 1
+        
+        await db.execute(
+            "UPDATE users SET last_daily_bonus=?, bonus_today=?, bonus_date=? WHERE user_id=?",
+            (today, new_bonus, today, user_id)
+        )
+        await db.commit()
+        return True
 
 
 async def can_make_request(user_id: int, daily_limit: int) -> bool:
@@ -212,11 +248,16 @@ async def can_make_request(user_id: int, daily_limit: int) -> bool:
 
 
 async def log_request(user_id: int, score: int, mode: str):
+    """
+    Логирует КАЖДЫЙ запрос. is_success=1 — если score > 0.
+    Токсик с флагами 0 → is_success=0 (не списывает лимит).
+    """
     today = date.today().isoformat()
+    is_success = 1 if score > 0 else 0
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO requests (user_id, date, mode, score) VALUES (?, ?, ?, ?)",
-            (user_id, today, mode, score),
+            "INSERT INTO requests (user_id, date, mode, score, is_success) VALUES (?, ?, ?, ?, ?)",
+            (user_id, today, mode, score, is_success),
         )
         await db.execute(
             "UPDATE users SET total_requests = total_requests + 1, points = points + 10 WHERE user_id=?",
@@ -263,14 +304,14 @@ async def get_referral_count(user_id: int) -> int:
 
 
 async def get_weekly_top() -> list:
-    """Топ-10 юзеров по активности за 7 дней. Возвращает только username/ID."""
+    """Топ-10 юзеров по активности за 7 дней."""
     seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
             SELECT u.username, u.user_id, COUNT(r.id) as cnt
             FROM users u
             JOIN requests r ON r.user_id = u.user_id
-            WHERE r.date >= ?
+            WHERE r.date >= ? AND r.is_success = 1
             GROUP BY u.user_id
             ORDER BY cnt DESC
             LIMIT 10
