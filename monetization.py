@@ -7,7 +7,7 @@ from config import REQUIRED_CHANNEL
 log = logging.getLogger("monetization")
 
 
-def subscribe_kb() -> InlineKeyboardMarkup | None:
+def subscribe_kb() -> InlineKeyboardMarkup:
     if not REQUIRED_CHANNEL:
         return None
     url = f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
@@ -25,7 +25,6 @@ async def is_subscribed(bot: Bot, user_id: int) -> bool:
         return member.status in ("member", "administrator", "creator")
     except TelegramBadRequest as e:
         log.warning("Subscription check failed: %s", e)
-        # Если бот не админ канала — не блокируем юзера
         return True
     except Exception as e:
         log.exception("Subscription check error: %s", e)
