@@ -29,7 +29,7 @@ from prompts import MODES
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-log = logging.getLogger("mega_bot")
+log = logging.getLogger("vibe_bot")
 
 bot = Bot(token=config.BOT_TOKEN,
           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -67,19 +67,9 @@ MODE_HINTS = {
 }
 
 MODE_SCORE_FIELD = {
-    "toxic": "flags",
-    "kent": "kent_level",
-    "fortune": "luck",
-    "cringe": "cringe",
-    "flex": "flex",
-    "relationship": "compat",
-    "leader": "balance",
-    "age": "age",
-    "lonely": "lonely",
-    "psycho": None,
-    "aura": None,
-    "crush": None,
-    "meme": None,
+    "toxic": "flags", "kent": "kent_level", "fortune": "luck", "cringe": "cringe",
+    "flex": "flex", "relationship": "compat", "leader": "balance", "age": "age",
+    "lonely": "lonely", "psycho": None, "aura": None, "crush": None, "meme": None,
 }
 
 WRONG_TYPE_MSG = (
@@ -109,7 +99,7 @@ def _is_spam_text(text: str) -> bool:
 
 
 # ═══════════════════════════════════════════
-# ПРИВАТНОСТЬ И ЮРИДИКА (убрали 4-й пункт)
+# ПРИВАТНОСТЬ И ЮРИДИКА
 # ═══════════════════════════════════════════
 PRIVACY_TEXT = (
     "📄 <b>Политика конфиденциальности и правила</b>\n\n"
@@ -216,11 +206,16 @@ def _share_kb(mode: str):
 # ═══════════════════════════════════════════
 async def _get_limit_text(user_id: int) -> str:
     try:
-        used = await database.get_today_requests(user_id)
-        bonus = await database.get_bonus_today(user_id)
-        limit = config.DAILY_LIMIT + bonus
-        left = max(0, limit - used)
-        return f"⚡ <b>Осталось на сегодня: {left} из {limit}</b>"
+        daily_used = await database.get_daily_used(user_id)
+        daily_total = config.DAILY_LIMIT + (1 if await database.check_daily_bonus(user_id) else 0)
+        daily_left = max(0, daily_total - daily_used)
+        
+        bonus_balance = await database.get_bonus_balance(user_id)
+        
+        text = f"⚡ <b>Дневные:</b> {daily_left} из {daily_total}"
+        if bonus_balance > 0:
+            text += f"\n💎 <b>Бонусные:</b> {bonus_balance}"
+        return text
     except Exception:
         return ""
 
@@ -323,12 +318,24 @@ async def cmd_start(message: Message, state: FSMContext):
     limit_text = await _get_limit_text(message.from_user.id)
 
     text = (
-        "👋 <b>Добро пожаловать в Mega-Bot!</b>\n\n"
+        "🔮 <b>VIBE CHECK</b>\n\n"
+        "Привет! Я — AI-бот, который анализирует твой вайб по фото.\n\n"
+        "📸 <b>Что я умею:</b>\n"
+        "• 🧪 Проверю переписку на токсичность\n"
+        "• 😎 Расскажу, что о тебе думает кент\n"
+        "• 🔮 Определю твою ауру и будущее\n"
+        "• 🎯 Найду твой тип краша\n"
+        "• 🤬 Оценю уровень кринжа\n"
+        "• 😂 Сделаю мем из фото\n\n"
+        "💡 <b>Как использовать:</b>\n"
+        "1. Выбери режим\n"
+        "2. Скинь фото\n"
+        "3. Получи карточку за 5 секунд\n\n"
         f"{daily_text}"
-        f"{limit_text}\n\n"
-        "Выбери категорию:\n\n"
-        f"🎁 Приглашено: <b>{ref_count}</b> друзей (+1 проверка за каждого)\n"
-        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>"
+        f"{limit_text}\n"
+        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n"
+        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
+        "👇 <b>Выбери категорию:</b>"
     )
     await message.answer(text, reply_markup=_main_menu_kb())
 
@@ -365,9 +372,50 @@ async def cb_privacy(cb: CallbackQuery):
     await cb.answer()
 
 
-# ═══════════════════════════════════════════
-# HELP
-# ═══════════════════════════════════════════
+@dp.callback_query(F.data == "check_sub")
+async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
+    is_sub = await monetization.is_subscribed(bot, cb.from_user.id)
+    if is_sub:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        
+        await database.register_user(cb.from_user.id, cb.from_user.username)
+        
+        daily_given = await database.check_daily_bonus(cb.from_user.id)
+        daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
+        
+        ref_count = await database.get_referral_count(cb.from_user.id)
+        ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{cb.from_user.id}"
+        limit_text = await _get_limit_text(cb.from_user.id)
+        
+        text = (
+            "🔮 <b>VIBE CHECK</b>\n\n"
+            "Привет! Я — AI-бот, который анализирует твой вайб по фото.\n\n"
+            "📸 <b>Что я умею:</b>\n"
+            "• 🧪 Проверю переписку на токсичность\n"
+            "• 😎 Расскажу, что о тебе думает кент\n"
+            "• 🔮 Определю твою ауру и будущее\n"
+            "• 🎯 Найду твой тип краша\n"
+            "• 🤬 Оценю уровень кринжа\n"
+            "• 😂 Сделаю мем из фото\n\n"
+            "💡 <b>Как использовать:</b>\n"
+            "1. Выбери режим\n"
+            "2. Скинь фото\n"
+            "3. Получи карточку за 5 секунд\n\n"
+            f"{daily_text}"
+            f"{limit_text}\n"
+            f"🎁 Приглашено: <b>{ref_count}</b> друзей\n"
+            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
+            "👇 <b>Выбери категорию:</b>"
+        )
+        await cb.message.answer(text, reply_markup=_main_menu_kb())
+        await cb.answer("✅ Подписка подтверждена!", show_alert=True)
+    else:
+        await cb.answer("❌ Ты ещё не подписался. Подпишись и нажми снова.", show_alert=True)
+
+
 HELP_TEXT = (
     "📖 <b>КАК ЭТО РАБОТАЕТ:</b>\n\n"
     "1️⃣ Выбери режим из меню\n"
@@ -410,9 +458,6 @@ async def cb_help(cb: CallbackQuery):
     await cb.answer()
 
 
-# ═══════════════════════════════════════════
-# КАТЕГОРИИ
-# ═══════════════════════════════════════════
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
     if not await _require_not_banned(cb.from_user.id):
@@ -543,7 +588,6 @@ async def cb_top_week(cb: CallbackQuery):
     else:
         lines = []
         for i, (username, user_id, cnt) in enumerate(top, 1):
-            # ТОЛЬКО ТЕКСТ, без @ и без ссылок
             if username and username.strip():
                 name = username.strip()
             else:
@@ -590,9 +634,6 @@ async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-# ═══════════════════════════════════════════
-# КОМАНДЫ
-# ═══════════════════════════════════════════
 @dp.message(Command("myref"))
 async def cmd_myref(m: Message):
     ref_count = await database.get_referral_count(m.from_user.id)
@@ -603,9 +644,6 @@ async def cmd_myref(m: Message):
     )
 
 
-# ═══════════════════════════════════════════
-# АДМИН-ПАНЕЛЬ
-# ═══════════════════════════════════════════
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
     if message.from_user.id != config.ADMIN_ID:
@@ -658,7 +696,6 @@ async def cb_admin_stats(cb: CallbackQuery):
             f"  {MODE_NAMES.get(m, m)}: <b>{c}</b>"
             for m, c in sorted(s["by_mode"].items(), key=lambda x: -x[1])
         ) or "  —"
-        # БЕЗ @ и без ссылок
         top_users_text = "\n".join(
             f"  {i+1}. {u[0] if u[0] else 'Аноним'} — {u[2]}"
             for i, u in enumerate(s["top_users"])
@@ -890,7 +927,7 @@ async def handle_photo(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-            # Безопасный score + "не списывать если 0"
+            # Логируем ВСЕГДА. База сама спишет дневные, а если их нет — бонусные
             if not from_cache:
                 score_field = MODE_SCORE_FIELD.get(mode)
                 raw = result.get(score_field, 0) if score_field else 0
@@ -898,14 +935,11 @@ async def handle_photo(message: Message, state: FSMContext):
                     score = int(raw) if raw else 0
                 except (ValueError, TypeError):
                     score = 0
+                
+                await database.log_request(user_id, score, mode)
 
-                should_log = True
+                # Предупреждение, если токсик не списал
                 if mode == "toxic" and score == 0:
-                    should_log = False
-
-                if should_log:
-                    await database.log_request(user_id, score, mode)
-                else:
                     await message.answer(
                         "🎁 <b>Бот не смог распознать переписку</b>, "
                         "поэтому <b>проверка НЕ была списана</b>.\n\n"
@@ -978,7 +1012,7 @@ async def handle_text(message: Message, state: FSMContext):
 # ═══════════════════════════════════════════
 async def main():
     await database.init_db()
-    log.info("Mega bot started. Model=%s | Channel=%s | Admin=%s | DB=%s",
+    log.info("Vibe Check bot started. Model=%s | Channel=%s | Admin=%s | DB=%s",
              config.LLM_MODEL, config.REQUIRED_CHANNEL or "OFF",
              config.ADMIN_ID or "NOT SET", config.DB_PATH)
     await bot.delete_webhook(drop_pending_updates=True)
