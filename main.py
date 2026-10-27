@@ -337,6 +337,22 @@ async def cmd_start(message: Message, state: FSMContext):
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
         "👇 <b>Выбери категорию:</b>"
     )
+    
+    # Пытаемся отправить с картинкой (если файл есть)
+    banner_path = "start_banner.jpg"
+    if os.path.exists(banner_path):
+        try:
+            photo = FSInputFile(banner_path)
+            await message.answer_photo(
+                photo=photo,
+                caption=text,
+                reply_markup=_main_menu_kb()
+            )
+            return
+        except Exception as e:
+            log.warning("Failed to send banner: %s", e)
+            
+    # Fallback — просто текст
     await message.answer(text, reply_markup=_main_menu_kb())
 
 
@@ -410,6 +426,17 @@ async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
             f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
             "👇 <b>Выбери категорию:</b>"
         )
+        
+        banner_path = "start_banner.jpg"
+        if os.path.exists(banner_path):
+            try:
+                photo = FSInputFile(banner_path)
+                await cb.message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
+                await cb.answer("✅ Подписка подтверждена!", show_alert=True)
+                return
+            except Exception:
+                pass
+                
         await cb.message.answer(text, reply_markup=_main_menu_kb())
         await cb.answer("✅ Подписка подтверждена!", show_alert=True)
     else:
