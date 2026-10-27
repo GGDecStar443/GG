@@ -35,6 +35,9 @@ bot = Bot(token=config.BOT_TOKEN,
           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# Хранилище ID последних сообщений с меню (user_id -> message_id)
+_last_menu_messages = {}
+
 
 class Mode(StatesGroup):
     waiting_photo = State()
@@ -251,6 +254,29 @@ async def _require_not_banned(user_id: int) -> bool:
 
 
 # ═══════════════════════════════════════════
+# УМНОЕ МЕНЮ (удаление старого)
+# ═══════════════════════════════════════════
+async def _send_or_replace_menu(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup):
+    """Отправляет новое меню, удаляя предыдущее."""
+    user_id = cb.from_user.id
+    
+    # Удаляем старое меню, если было
+    old_msg_id = _last_menu_messages.get(user_id)
+    if old_msg_id:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=old_msg_id)
+        except Exception:
+            pass
+    
+    # Отправляем новое
+    try:
+        msg = await cb.message.answer(text, reply_markup=kb)
+        _last_menu_messages[user_id] = msg.message_id
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════
 # ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК
 # ═══════════════════════════════════════════
 @dp.errors()
@@ -338,22 +364,28 @@ async def cmd_start(message: Message, state: FSMContext):
         "👇 <b>Выбери категорию:</b>"
     )
     
-    # Пытаемся отправить с картинкой (если файл есть)
-    banner_path = "start_banner.jpg"
+    # Удаляем старое меню, если было
+    old_msg_id = _last_menu_messages.get(message.from_user.id)
+    if old_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.from_user.id, message_id=old_msg_id)
+        except Exception:
+            pass
+
+    # Пытаемся отправить с картинкой
+    banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_banner.jpg")
     if os.path.exists(banner_path):
         try:
             photo = FSInputFile(banner_path)
-            await message.answer_photo(
-                photo=photo,
-                caption=text,
-                reply_markup=_main_menu_kb()
-            )
+            msg = await message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
+            _last_menu_messages[message.from_user.id] = msg.message_id
             return
         except Exception as e:
             log.warning("Failed to send banner: %s", e)
             
     # Fallback — просто текст
-    await message.answer(text, reply_markup=_main_menu_kb())
+    msg = await message.answer(text, reply_markup=_main_menu_kb())
+    _last_menu_messages[message.from_user.id] = msg.message_id
 
 
 @dp.callback_query(F.data == "accept_privacy")
@@ -427,17 +459,19 @@ async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
             "👇 <b>Выбери категорию:</b>"
         )
         
-        banner_path = "start_banner.jpg"
+        banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_banner.jpg")
         if os.path.exists(banner_path):
             try:
                 photo = FSInputFile(banner_path)
-                await cb.message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
+                msg = await cb.message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
+                _last_menu_messages[cb.from_user.id] = msg.message_id
                 await cb.answer("✅ Подписка подтверждена!", show_alert=True)
                 return
             except Exception:
                 pass
                 
-        await cb.message.answer(text, reply_markup=_main_menu_kb())
+        msg = await cb.message.answer(text, reply_markup=_main_menu_kb())
+        _last_menu_messages[cb.from_user.id] = msg.message_id
         await cb.answer("✅ Подписка подтверждена!", show_alert=True)
     else:
         await cb.answer("❌ Ты ещё не подписался. Подпишись и нажми снова.", show_alert=True)
@@ -494,10 +528,8 @@ async def cb_back_main(cb: CallbackQuery):
         return
     limit_text = await _get_limit_text(cb.from_user.id)
     text = f"Выбери категорию:\n\n{limit_text}" if limit_text else "Выбери категорию:"
-    try:
-        await cb.message.edit_text(text, reply_markup=_main_menu_kb())
-    except TelegramAPIError:
-        await cb.message.answer(text, reply_markup=_main_menu_kb())
+    
+    await _send_or_replace_menu(cb, text, _main_menu_kb())
     await cb.answer()
 
 
