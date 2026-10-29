@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + UX + юридика + админка + защита
+# Мега-бот: 13 режимов + UX + юридика + админка + защита + конкурс
 import asyncio
 import logging
 import os
@@ -38,11 +38,9 @@ dp = Dispatcher()
 # Хранилище ID последних сообщений с меню (user_id -> message_id)
 _last_menu_messages = {}
 
-
 class Mode(StatesGroup):
     waiting_photo = State()
     admin_give_bonus = State()
-
 
 MODE_NAMES = {
     "toxic": "🧪 Токсик-Чек", "kent": "😎 Кент-Чек", "fortune": "🔮 Гадалка",
@@ -89,7 +87,6 @@ _BAD_WORDS = re.compile(
     re.IGNORECASE,
 )
 
-
 def _is_spam_text(text: str) -> bool:
     if not text or len(text) < 3:
         return False
@@ -100,9 +97,8 @@ def _is_spam_text(text: str) -> bool:
         return True
     return False
 
-
 # ═══════════════════════════════════════════
-# ПРИВАТНОСТЬ И ЮРИДИКА
+# ПРИВАТНОСТЬ
 # ═══════════════════════════════════════════
 PRIVACY_TEXT = (
     "📄 <b>Политика конфиденциальности и правила</b>\n\n"
@@ -126,13 +122,11 @@ PRIVACY_TEXT = (
     f"🔗 Админ: {config.ADMIN_URL}"
 )
 
-
 def _privacy_accept_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Согласен с правилами", callback_data="accept_privacy")],
         [InlineKeyboardButton(text="❌ Не согласен", callback_data="decline_privacy")],
     ])
-
 
 # ═══════════════════════════════════════════
 # КЛАВИАТУРЫ
@@ -187,6 +181,7 @@ def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="admin_top_refs")],  # НОВАЯ КНОПКА
         [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
         [InlineKeyboardButton(text="💾 Сделать бэкап", callback_data="admin_backup")],
     ])
@@ -203,7 +198,6 @@ def _share_kb(mode: str):
         [InlineKeyboardButton(text="🎲 Другой режим", callback_data="random_mode")],
     ])
 
-
 # ═══════════════════════════════════════════
 # ХЕЛПЕРЫ
 # ═══════════════════════════════════════════
@@ -212,9 +206,7 @@ async def _get_limit_text(user_id: int) -> str:
         daily_used = await database.get_daily_used(user_id)
         daily_total = config.DAILY_LIMIT + (1 if await database.check_daily_bonus(user_id) else 0)
         daily_left = max(0, daily_total - daily_used)
-        
         bonus_balance = await database.get_bonus_balance(user_id)
-        
         text = f"⚡ <b>Дневные:</b> {daily_left} из {daily_total}"
         if bonus_balance > 0:
             text += f"\n💎 <b>Бонусные:</b> {bonus_balance}"
@@ -222,14 +214,12 @@ async def _get_limit_text(user_id: int) -> str:
     except Exception:
         return ""
 
-
 async def _safe_delete(msg: Message, delay: int = 10):
     await asyncio.sleep(delay)
     try:
         await msg.delete()
     except Exception:
         pass
-
 
 async def _require_subscription(message_or_cb):
     is_sub = await monetization.is_subscribed(bot, message_or_cb.from_user.id)
@@ -247,37 +237,26 @@ async def _require_subscription(message_or_cb):
         return False
     return True
 
-
 async def _require_not_banned(user_id: int) -> bool:
     status = await database.get_ban_status(user_id)
     return not status["is_banned"]
 
-
-# ═══════════════════════════════════════════
-# УМНОЕ МЕНЮ (удаление старого)
-# ═══════════════════════════════════════════
 async def _send_or_replace_menu(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup):
-    """Отправляет новое меню, удаляя предыдущее."""
     user_id = cb.from_user.id
-    
-    # Удаляем старое меню, если было
     old_msg_id = _last_menu_messages.get(user_id)
     if old_msg_id:
         try:
             await bot.delete_message(chat_id=user_id, message_id=old_msg_id)
         except Exception:
             pass
-    
-    # Отправляем новое
     try:
         msg = await cb.message.answer(text, reply_markup=kb)
         _last_menu_messages[user_id] = msg.message_id
     except Exception:
         pass
 
-
 # ═══════════════════════════════════════════
-# ГЛОБАЛЬНЫЙ ПЕРЕХВАТЧИК
+# ОШИБКИ
 # ═══════════════════════════════════════════
 @dp.errors()
 async def global_error_handler(event):
@@ -295,14 +274,12 @@ async def global_error_handler(event):
         log.error("Failed to send error message: %s", e)
     return True
 
-
 # ═══════════════════════════════════════════
 # СТАРТ
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-
     if not await _require_not_banned(message.from_user.id):
         status = await database.get_ban_status(message.from_user.id)
         if status.get("is_permanent"):
@@ -338,7 +315,6 @@ async def cmd_start(message: Message, state: FSMContext):
 
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
-
     ref_count = await database.get_referral_count(message.from_user.id)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{message.from_user.id}"
     limit_text = await _get_limit_text(message.from_user.id)
@@ -364,7 +340,6 @@ async def cmd_start(message: Message, state: FSMContext):
         "👇 <b>Выбери категорию:</b>"
     )
     
-    # Удаляем старое меню, если было
     old_msg_id = _last_menu_messages.get(message.from_user.id)
     if old_msg_id:
         try:
@@ -372,7 +347,6 @@ async def cmd_start(message: Message, state: FSMContext):
         except Exception:
             pass
 
-    # Пытаемся отправить с картинкой
     banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_banner.jpg")
     if os.path.exists(banner_path):
         try:
@@ -383,142 +357,13 @@ async def cmd_start(message: Message, state: FSMContext):
         except Exception as e:
             log.warning("Failed to send banner: %s", e)
             
-    # Fallback — просто текст
     msg = await message.answer(text, reply_markup=_main_menu_kb())
     _last_menu_messages[message.from_user.id] = msg.message_id
 
 
-@dp.callback_query(F.data == "accept_privacy")
-async def cb_accept_privacy(cb: CallbackQuery, state: FSMContext):
-    await database.set_privacy_accepted(cb.from_user.id)
-    await cb.message.edit_text(
-        "✅ <b>Спасибо! Правила приняты.</b>\n\n"
-        "Нажми /start, чтобы начать.",
-    )
-    await cb.answer("Добро пожаловать!")
-
-
-@dp.callback_query(F.data == "decline_privacy")
-async def cb_decline_privacy(cb: CallbackQuery):
-    await cb.message.edit_text(
-        "❌ <b>Без согласия с правилами бот не работает.</b>\n\n"
-        "Если передумаешь — нажми /start."
-    )
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "privacy")
-async def cb_privacy(cb: CallbackQuery):
-    try:
-        await cb.message.edit_text(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
-        ]))
-    except TelegramAPIError:
-        await cb.message.answer(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
-        ]))
-    await cb.answer()
-
-
-@dp.callback_query(F.data == "check_sub")
-async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
-    is_sub = await monetization.is_subscribed(bot, cb.from_user.id)
-    if is_sub:
-        try:
-            await cb.message.delete()
-        except Exception:
-            pass
-        
-        await database.register_user(cb.from_user.id, cb.from_user.username)
-        
-        daily_given = await database.check_daily_bonus(cb.from_user.id)
-        daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
-        
-        ref_count = await database.get_referral_count(cb.from_user.id)
-        ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{cb.from_user.id}"
-        limit_text = await _get_limit_text(cb.from_user.id)
-        
-        text = (
-            "🔮 <b>VIBE CHECK</b>\n\n"
-            "Привет! Я — AI-бот, который анализирует твой вайб по фото.\n\n"
-            "📸 <b>Что я умею:</b>\n"
-            "• 🧪 Проверю переписку на токсичность\n"
-            "• 😎 Расскажу, что о тебе думает кент\n"
-            "• 🔮 Определю твою ауру и будущее\n"
-            "• 🎯 Найду твой тип краша\n"
-            "• 🤬 Оценю уровень кринжа\n"
-            "• 😂 Сделаю мем из фото\n\n"
-            "💡 <b>Как использовать:</b>\n"
-            "1. Выбери режим\n"
-            "2. Скинь фото\n"
-            "3. Получи карточку за 5 секунд\n\n"
-            f"{daily_text}"
-            f"{limit_text}\n"
-            f"🎁 Приглашено: <b>{ref_count}</b> друзей\n"
-            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-            "👇 <b>Выбери категорию:</b>"
-        )
-        
-        banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_banner.jpg")
-        if os.path.exists(banner_path):
-            try:
-                photo = FSInputFile(banner_path)
-                msg = await cb.message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
-                _last_menu_messages[cb.from_user.id] = msg.message_id
-                await cb.answer("✅ Подписка подтверждена!", show_alert=True)
-                return
-            except Exception:
-                pass
-                
-        msg = await cb.message.answer(text, reply_markup=_main_menu_kb())
-        _last_menu_messages[cb.from_user.id] = msg.message_id
-        await cb.answer("✅ Подписка подтверждена!", show_alert=True)
-    else:
-        await cb.answer("❌ Ты ещё не подписался. Подпишись и нажми снова.", show_alert=True)
-
-
-HELP_TEXT = (
-    "📖 <b>КАК ЭТО РАБОТАЕТ:</b>\n\n"
-    "1️⃣ Выбери режим из меню\n"
-    "2️⃣ Скинь нужное фото:\n"
-    "   • 🧪 Токсик-Чек → <b>скрин переписки</b>\n"
-    "   • 😎 Кент-Чек → <b>фото друга</b>\n"
-    "   • 📱 Возраст → <b>своё селфи</b>\n"
-    "   • ❤️ Отношения → <b>фото с партнёром</b>\n"
-    "3️⃣ Получи карточку за 5-10 сек\n"
-    "4️⃣ Поделись с другом\n\n"
-    "⚠️ <b>ВАЖНО:</b>\n"
-    "• <b>Скрывай</b> номера телефонов, ФИО, адреса, номера карт на скринах!\n"
-    "• Бот <b>не хранит</b> фото после обработки\n"
-    "• Результаты — <b>шутливые</b>, не являются консультацией\n\n"
-    f"⚡ <b>Лимит:</b> {config.DAILY_LIMIT} проверок/день\n"
-    "🎁 <b>За друга:</b> +1 проверка\n"
-    "🏆 <b>Топ недели:</b> соревнуйся с другими\n\n"
-    f"❓ <b>Есть вопрос?</b> Пиши админу: {config.ADMIN_URL}"
-)
-
-
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
-        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")],
-    ]))
-
-
-@dp.callback_query(F.data == "help")
-async def cb_help(cb: CallbackQuery):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
-        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
-    ])
-    try:
-        await cb.message.edit_text(HELP_TEXT, reply_markup=kb)
-    except TelegramAPIError:
-        await cb.message.answer(HELP_TEXT, reply_markup=kb)
-    await cb.answer()
-
-
+# ═══════════════════════════════════════════
+# КАТЕГОРИИ И МЕНЮ
+# ═══════════════════════════════════════════
 @dp.callback_query(F.data == "back_main")
 async def cb_back_main(cb: CallbackQuery):
     if not await _require_not_banned(cb.from_user.id):
@@ -528,10 +373,8 @@ async def cb_back_main(cb: CallbackQuery):
         return
     limit_text = await _get_limit_text(cb.from_user.id)
     text = f"Выбери категорию:\n\n{limit_text}" if limit_text else "Выбери категорию:"
-    
     await _send_or_replace_menu(cb, text, _main_menu_kb())
     await cb.answer()
-
 
 @dp.callback_query(F.data.startswith("cat_"))
 async def cb_category(cb: CallbackQuery):
@@ -561,7 +404,9 @@ async def cb_category(cb: CallbackQuery):
             await cb.message.answer("😂 <b>Мемы:</b>", reply_markup=_cat_meme_kb())
     await cb.answer()
 
-
+# ═══════════════════════════════════════════
+# РЕФЕРАЛКА (КОНКУРС)
+# ═══════════════════════════════════════════
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
     if not await _require_not_banned(cb.from_user.id):
@@ -571,21 +416,40 @@ async def cb_invite(cb: CallbackQuery):
         return
     ref_count = await database.get_referral_count(cb.from_user.id)
     ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{cb.from_user.id}"
+    
     text = (
-        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n"
-        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-        f"За каждого друга: +1 проверка (макс +{config.REFERRAL_DAILY_LIMIT}/день)"
+        f"🎁 <b>Приглашено: {ref_count}</b> друзей\n\n"
+        f"🔗 <b>Твоя ссылка для конкурса:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"🏆 <b>Призы конкурса:</b>\n"
+        f"🥇 1 место: <b>100 попыток + VIP</b>\n"
+        f"🥈 2 место: <b>50 попыток</b>\n"
+        f"🥉 3 место: <b>30 попыток</b>\n"
+        f"🎁 Всем, кто привел 3+ друзей: <b>10 попыток</b>\n\n"
+        f"<i>Кидай ссылку друзьям в чаты и сторис!</i>"
     )
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
     ])
-    try:
-        await cb.message.edit_text(text, reply_markup=kb)
-    except TelegramAPIError:
-        await cb.message.answer(text, reply_markup=kb)
+    
+    await _send_or_replace_menu(cb, text, kb)
     await cb.answer()
 
 
+@dp.message(Command("myref"))
+async def cmd_myref(m: Message):
+    ref_count = await database.get_referral_count(m.from_user.id)
+    ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{m.from_user.id}"
+    await m.answer(
+        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n"
+        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>"
+    )
+
+
+# ═══════════════════════════════════════════
+# ТОП НЕДЕЛИ И РАНДОМ
+# ═══════════════════════════════════════════
 @dp.callback_query(F.data == "random_mode")
 async def cb_random(cb: CallbackQuery, state: FSMContext):
     if not await _require_not_banned(cb.from_user.id):
@@ -692,23 +556,139 @@ async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
+# ═══════════════════════════════════════════
+# ПОМОЩЬ И ПРИВАТНОСТЬ
+# ═══════════════════════════════════════════
+HELP_TEXT = (
+    "📖 <b>КАК ЭТО РАБОТАЕТ:</b>\n\n"
+    "1️⃣ Выбери режим из меню\n"
+    "2️⃣ Скинь нужное фото:\n"
+    "   • 🧪 Токсик-Чек → <b>скрин переписки</b>\n"
+    "   • 😎 Кент-Чек → <b>фото друга</b>\n"
+    "   • 📱 Возраст → <b>своё селфи</b>\n"
+    "   • ❤️ Отношения → <b>фото с партнёром</b>\n"
+    "3️⃣ Получи карточку за 5-10 сек\n"
+    "4️⃣ Поделись с другом\n\n"
+    "⚠️ <b>ВАЖНО:</b>\n"
+    "• <b>Скрывай</b> номера телефонов, ФИО, адреса, номера карт на скринах!\n"
+    "• Бот <b>не хранит</b> фото после обработки\n"
+    "• Результаты — <b>шутливые</b>, не являются консультацией\n\n"
+    f"⚡ <b>Лимит:</b> {config.DAILY_LIMIT} проверок/день\n"
+    "🎁 <b>За друга:</b> +1 проверка\n"
+    "🏆 <b>Топ недели:</b> соревнуйся с другими\n\n"
+    f"❓ <b>Есть вопрос?</b> Пиши админу: {config.ADMIN_URL}"
+)
 
-@dp.message(Command("myref"))
-async def cmd_myref(m: Message):
-    ref_count = await database.get_referral_count(m.from_user.id)
-    ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{m.from_user.id}"
-    await m.answer(
-        f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n"
-        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>"
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")],
+    ]))
+
+@dp.callback_query(F.data == "help")
+async def cb_help(cb: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
+        [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+    ])
+    try:
+        await cb.message.edit_text(HELP_TEXT, reply_markup=kb)
+    except TelegramAPIError:
+        await cb.message.answer(HELP_TEXT, reply_markup=kb)
+    await cb.answer()
+
+@dp.callback_query(F.data == "accept_privacy")
+async def cb_accept_privacy(cb: CallbackQuery, state: FSMContext):
+    await database.set_privacy_accepted(cb.from_user.id)
+    await cb.message.edit_text(
+        "✅ <b>Спасибо! Правила приняты.</b>\n\n"
+        "Нажми /start, чтобы начать.",
     )
+    await cb.answer("Добро пожаловать!")
 
+@dp.callback_query(F.data == "decline_privacy")
+async def cb_decline_privacy(cb: CallbackQuery):
+    await cb.message.edit_text(
+        "❌ <b>Без согласия с правилами бот не работает.</b>\n\n"
+        "Если передумаешь — нажми /start."
+    )
+    await cb.answer()
 
+@dp.callback_query(F.data == "privacy")
+async def cb_privacy(cb: CallbackQuery):
+    try:
+        await cb.message.edit_text(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    except TelegramAPIError:
+        await cb.message.answer(PRIVACY_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="back_main")]
+        ]))
+    await cb.answer()
+
+@dp.callback_query(F.data == "check_sub")
+async def cb_check_sub(cb: CallbackQuery, state: FSMContext):
+    is_sub = await monetization.is_subscribed(bot, cb.from_user.id)
+    if is_sub:
+        try:
+            await cb.message.delete()
+        except Exception:
+            pass
+        
+        await database.register_user(cb.from_user.id, cb.from_user.username)
+        daily_given = await database.check_daily_bonus(cb.from_user.id)
+        daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
+        ref_count = await database.get_referral_count(cb.from_user.id)
+        ref_link = f"https://t.me/{config.BOT_USERNAME}?start=ref_{cb.from_user.id}"
+        limit_text = await _get_limit_text(cb.from_user.id)
+        
+        text = (
+            "🔮 <b>VIBE CHECK</b>\n\n"
+            "Привет! Я — AI-бот, который анализирует твой вайб по фото.\n\n"
+            "📸 <b>Что я умею:</b>\n"
+            "• 🧪 Проверю переписку на токсичность\n"
+            "• 😎 Расскажу, что о тебе думает кент\n"
+            "• 🔮 Определю твою ауру и будущее\n"
+            "• 🎯 Найду твой тип краша\n"
+            "• 🤬 Оценю уровень кринжа\n"
+            "• 😂 Сделаю мем из фото\n\n"
+            "💡 <b>Как использовать:</b>\n"
+            "1. Выбери режим\n"
+            "2. Скинь фото\n"
+            "3. Получи карточку за 5 секунд\n\n"
+            f"{daily_text}"
+            f"{limit_text}\n"
+            f"🎁 Приглашено: <b>{ref_count}</b> друзей\n"
+            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
+            "👇 <b>Выбери категорию:</b>"
+        )
+        
+        banner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start_banner.jpg")
+        if os.path.exists(banner_path):
+            try:
+                photo = FSInputFile(banner_path)
+                msg = await cb.message.answer_photo(photo=photo, caption=text, reply_markup=_main_menu_kb())
+                _last_menu_messages[cb.from_user.id] = msg.message_id
+                await cb.answer("✅ Подписка подтверждена!", show_alert=True)
+                return
+            except Exception:
+                pass
+                
+        msg = await cb.message.answer(text, reply_markup=_main_menu_kb())
+        _last_menu_messages[cb.from_user.id] = msg.message_id
+        await cb.answer("✅ Подписка подтверждена!", show_alert=True)
+    else:
+        await cb.answer("❌ Ты ещё не подписался. Подпишись и нажми снова.", show_alert=True)
+
+# ═══════════════════════════════════════════
+# АДМИН-ПАНЕЛЬ
+# ═══════════════════════════════════════════
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
     if message.from_user.id != config.ADMIN_ID:
         return
     await message.answer("👑 <b>Админ-панель</b>", reply_markup=_admin_menu_kb())
-
 
 @dp.callback_query(F.data == "admin_give")
 async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
@@ -721,7 +701,6 @@ async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
         "Пример: <code>123456789 10</code>"
     )
     await cb.answer()
-
 
 @dp.message(Mode.admin_give_bonus, F.text)
 async def process_admin_give(message: Message, state: FSMContext):
@@ -742,7 +721,6 @@ async def process_admin_give(message: Message, state: FSMContext):
     except Exception:
         await message.answer("❌ Ошибка. Формат: <code>ID количество</code>")
     await state.clear()
-
 
 @dp.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(cb: CallbackQuery):
@@ -776,6 +754,34 @@ async def cb_admin_stats(cb: CallbackQuery):
         await cb.message.answer("Ошибка при сборе статистики.")
     await cb.answer()
 
+# НОВЫЙ ОБРАБОТЧИК ТОПА РЕФЕРЕРОВ
+@dp.callback_query(F.data == "admin_top_refs")
+async def cb_admin_top_refs(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        await cb.answer("Только для админа", show_alert=True)
+        return
+    try:
+        top_refs = await database.get_top_referrers(limit=15)
+        if not top_refs:
+            await cb.message.answer("🏆 Пока никто не приглашал друзей.")
+            await cb.answer()
+            return
+            
+        lines = []
+        for i, (username, user_id, refs) in enumerate(top_refs, 1):
+            name = f"@{username}" if username else "Аноним"
+            lines.append(f"  {i}. {name} (ID: <code>{user_id}</code>) — <b>{refs}</b> друзей")
+            
+        text = (
+            "🏆 <b>ТОП РЕФЕРЕРОВ (Конкурс):</b>\n\n"
+            + "\n".join(lines)
+            + "\n\n<i>Награждай победителей через кнопку «Выдать попытки»</i>"
+        )
+        await cb.message.answer(text)
+    except Exception as e:
+        log.exception("Top refs error: %s", e)
+        await cb.message.answer("Ошибка при загрузке топа.")
+    await cb.answer()
 
 @dp.callback_query(F.data == "admin_blacklist")
 async def cb_admin_blacklist(cb: CallbackQuery):
@@ -812,7 +818,6 @@ async def cb_admin_blacklist(cb: CallbackQuery):
         await cb.message.answer("Ошибка при загрузке ЧС.")
         await cb.answer()
 
-
 @dp.callback_query(F.data.startswith("pardon_"))
 async def cb_pardon(cb: CallbackQuery):
     if cb.from_user.id != config.ADMIN_ID:
@@ -826,7 +831,6 @@ async def cb_pardon(cb: CallbackQuery):
     except Exception:
         pass
     await cb.answer()
-
 
 @dp.callback_query(F.data == "admin_backup")
 async def cb_admin_backup(cb: CallbackQuery):
@@ -852,9 +856,8 @@ async def cb_admin_backup(cb: CallbackQuery):
         await cb.message.answer(f"❌ Ошибка бэкапа: {e}")
     await cb.answer()
 
-
 # ═══════════════════════════════════════════
-# ЗАЩИТА: НЕ-ФОТО
+# ЗАЩИТА И ФОТО
 # ═══════════════════════════════════════════
 @dp.message(F.video | F.document | F.audio | F.voice | F.video_note
             | F.sticker | F.animation | F.contact | F.location | F.poll)
@@ -864,10 +867,6 @@ async def handle_unsupported_content(message: Message):
     msg = await message.answer(WRONG_TYPE_MSG, reply_markup=_main_menu_kb())
     asyncio.create_task(_safe_delete(msg, 10))
 
-
-# ═══════════════════════════════════════════
-# ОБРАБОТЧИК ФОТО
-# ═══════════════════════════════════════════
 @dp.message(Mode.waiting_photo, F.photo)
 async def handle_photo(message: Message, state: FSMContext):
     tmp = None
@@ -986,7 +985,6 @@ async def handle_photo(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-            # Логируем ВСЕГДА. База сама спишет дневные, а если их нет — бонусные
             if not from_cache:
                 score_field = MODE_SCORE_FIELD.get(mode)
                 raw = result.get(score_field, 0) if score_field else 0
@@ -997,7 +995,6 @@ async def handle_photo(message: Message, state: FSMContext):
                 
                 await database.log_request(user_id, score, mode)
 
-                # Предупреждение, если токсик не списал
                 if mode == "toxic" and score == 0:
                     await message.answer(
                         "🎁 <b>Бот не смог распознать переписку</b>, "
@@ -1026,10 +1023,6 @@ async def handle_photo(message: Message, state: FSMContext):
             except OSError:
                 pass
 
-
-# ═══════════════════════════════════════════
-# ТЕКСТ
-# ═══════════════════════════════════════════
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -1065,10 +1058,6 @@ async def handle_text(message: Message, state: FSMContext):
 
     await message.answer("Нажми /start, чтобы открыть меню.")
 
-
-# ═══════════════════════════════════════════
-# ЗАПУСК
-# ═══════════════════════════════════════════
 async def main():
     await database.init_db()
     log.info("Vibe Check bot started. Model=%s | Channel=%s | Admin=%s | DB=%s",
@@ -1076,7 +1065,6 @@ async def main():
              config.ADMIN_ID or "NOT SET", config.DB_PATH)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     try:
