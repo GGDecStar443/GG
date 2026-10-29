@@ -97,7 +97,7 @@ def _is_spam_text(text: str) -> bool:
     return False
 
 # ═══════════════════════════════════════════
-# НОВОЕ ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ
+# ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ
 # ═══════════════════════════════════════════
 PRIVACY_TEXT = (
     "📜 <b>ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ</b>\n\n"
@@ -121,7 +121,7 @@ PRIVACY_TEXT = (
     "Весь код, дизайн и бренд принадлежат Автору. Копирование и коммерческое использование без разрешения запрещено.\n\n"
     "<b>7. ЗАКЛЮЧИТЕЛЬНЫЕ ПОЛОЖЕНИЯ</b>\n"
     "Автор может менять условия. Актуальная версия всегда в меню бота.\n\n"
-    f"❓ <b>Вопросы:</b> {config.ADMIN_URL}\n\n"
+    f"❓ <b>Вопросы:</b> {config.ADMIN_URL if config.ADMIN_URL else 'Напиши админу'}\n\n"
     "Нажимая «✅ Согласен», вы подтверждаете, что вам есть 14 лет (или вы используете бота с согласия родителей) и вы ознакомлены с правилами."
 )
 
@@ -365,7 +365,7 @@ async def cmd_start(message: Message, state: FSMContext):
     _last_menu_messages[message.from_user.id] = msg.message_id
 
 # ═══════════════════════════════════════════
-# МАГАЗИН ПОПЫТОК
+# МАГАЗИН ПОПЫТОК (Исправлена ошибка)
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "shop")
 async def cb_shop(cb: CallbackQuery):
@@ -385,13 +385,18 @@ async def cb_shop(cb: CallbackQuery):
         "💳 <b>Как купить:</b>\n"
         "Нажми на кнопку ниже, напиши Админу, какую сумму ты переводишь, "
         "и прикрепи чек об оплате. Попытки зачислятся в течение 5 минут!\n\n"
-        f"👉 <b>Написать Админу:</b> {config.ADMIN_URL}"
+        f"👉 <b>Написать Админу:</b> {config.ADMIN_URL if config.ADMIN_URL else 'Ссылка на админа не настроена'}"
     )
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Написать Админу для покупки", url=config.ADMIN_URL)],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
-    ])
+    # Защита от пустой ссылки
+    buttons = []
+    if config.ADMIN_URL:
+        buttons.append([InlineKeyboardButton(text="💳 Написать Админу для покупки", url=config.ADMIN_URL)])
+    else:
+        buttons.append([InlineKeyboardButton(text="⚠️ Ссылка на админа не настроена", callback_data="none")])
+    
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
     try:
         await cb.message.edit_text(text, reply_markup=kb)
@@ -443,7 +448,7 @@ async def cb_category(cb: CallbackQuery):
     await cb.answer()
 
 # ═══════════════════════════════════════════
-# РЕФЕРАЛКА (КОНКУРС)
+# РЕФЕРАЛКА (КОНКУРС) - УБРАЛИ + VIP
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
@@ -460,7 +465,7 @@ async def cb_invite(cb: CallbackQuery):
         f"🔗 <b>Твоя ссылка для конкурса:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"🏆 <b>Призы конкурса:</b>\n"
-        f"🥇 1 место: <b>100 попыток + VIP</b>\n"
+        f"🥇 1 место: <b>100 попыток</b>\n" # УБРАЛИ + VIP
         f"🥈 2 место: <b>50 попыток</b>\n"
         f"🥉 3 место: <b>30 попыток</b>\n"
         f"🎁 Всем, кто привел 3+ друзей: <b>10 попыток</b>\n\n"
@@ -609,7 +614,7 @@ HELP_TEXT = (
     f"⚡ <b>Лимит:</b> {config.DAILY_LIMIT} проверок/день\n"
     "🎁 <b>За друга:</b> +1 проверка\n"
     "🏆 <b>Топ недели:</b> соревнуйся с другими\n\n"
-    f"❓ <b>Есть вопрос?</b> Пиши админу: {config.ADMIN_URL}"
+    f"❓ <b>Есть вопрос?</b> Пиши админу: {config.ADMIN_URL if config.ADMIN_URL else 'Ссылка не настроена'}"
 )
 
 @dp.message(Command("help"))
