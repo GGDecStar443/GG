@@ -8,6 +8,7 @@ from config import DB_PATH, REFERRAL_BONUS, REFERRAL_DAILY_LIMIT, DAILY_LIMIT
 
 
 async def init_db():
+    # Создаём папку для базы, если её нет
     db_dir = os.path.dirname(DB_PATH)
     if db_dir and not os.path.exists(db_dir):
         try:
@@ -64,6 +65,7 @@ async def init_db():
 
 
 async def _migrate_users_table(db):
+    """Добавляет колонки в users, если их нет (для старых баз)."""
     async with db.execute("PRAGMA table_info(users)") as cur:
         columns = [row[1] for row in await cur.fetchall()]
     migrations = {
@@ -125,7 +127,7 @@ async def set_privacy_accepted(user_id: int):
 
 # ─────────── ПОПЫТКИ (ДНЕВНЫЕ + БОНУСНЫЕ) ───────────
 async def _reset_daily_if_needed(db, user_id: int):
-    """Внутренняя функция: сбрасывает дневные счетчики, если наступил новый день."""
+    """Сбрасывает дневные счетчики, если наступил новый день."""
     today = date.today().isoformat()
     async with db.execute("SELECT daily_date FROM users WHERE user_id=?", (user_id,)) as cur:
         row = await cur.fetchone()
@@ -135,8 +137,8 @@ async def _reset_daily_if_needed(db, user_id: int):
             (today, user_id)
         )
 
+
 async def get_daily_used(user_id: int) -> int:
-    """Сколько дневных попыток потрачено сегодня."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await _reset_daily_if_needed(db, user_id)
@@ -145,9 +147,6 @@ async def get_daily_used(user_id: int) -> int:
             row = await cur.fetchone()
     return (row[0] or 0) if row else 0
 
-async def get_daily_limit(user_id: int) -> int:
-    """Дневной лимит (4 + 1 за вход)."""
-    return DAILY_LIMIT + (1 if await check_daily_bonus(user_id) else 0)
 
 async def get_bonus_balance(user_id: int) -> int:
     """Общий кошелёк бонусов (не сгорает)."""
@@ -155,6 +154,7 @@ async def get_bonus_balance(user_id: int) -> int:
         async with db.execute("SELECT bonus_balance FROM users WHERE user_id=?", (user_id,)) as cur:
             row = await cur.fetchone()
     return (row[0] or 0) if row else 0
+
 
 async def add_bonus(user_id: int, amount: int):
     """Админская выдача попыток. Идёт в bonus_balance (НЕ сгорает)."""
@@ -168,7 +168,7 @@ async def add_bonus(user_id: int, amount: int):
 
 
 async def check_daily_bonus(user_id: int) -> bool:
-    """+1 бонус за вход. Привязан к дню."""
+    """+1 бонус за вход (в daily_used_today -1? Нет, это отдельный бонус)."""
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
@@ -181,9 +181,18 @@ async def check_daily_bonus(user_id: int) -> bool:
 
 
 async def can_make_request(user_id: int, daily_limit: int) -> bool:
-    """Проверяет, есть ли попытки: либо дневные, либо бонусные."""
+    """Проверяет, есть ли попытки: дневные или бонусные."""
     daily_used = await get_daily_used(user_id)
-    total_daily = daily_limit + (1 if await check_daily_bonus(user_id) else 0) # +1 за вход
+    # +1 за ежедневный вход, если он еще не использован сегодня
+    has_daily_bonus = False
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
+            row = await cur.fetchone()
+            if row and row[0] == today:
+                has_daily_bonus = True
+
+    total_daily = daily_limit + (1 if has_daily_bonus else 0)
     bonus_balance = await get_bonus_balance(user_id)
     
     if daily_used < total_daily:
@@ -199,7 +208,6 @@ async def log_request(user_id: int, score: int, mode: str):
     is_success = 1 if score > 0 else 0
     
     if not is_success:
-        # Если запрос неудачный (например, токсик 0%) — просто пишем в лог
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 "INSERT INTO requests (user_id, date, mode, score, is_success) VALUES (?, ?, ?, ?, ?)",
@@ -209,7 +217,6 @@ async def log_request(user_id: int, score: int, mode: str):
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        # Проверяем, надо ли сбросить дневные
         await _reset_daily_if_needed(db, user_id)
         
         async with db.execute("SELECT daily_used_today, bonus_balance, last_daily_bonus FROM users WHERE user_id=?", (user_id,)) as cur:
@@ -222,13 +229,10 @@ async def log_request(user_id: int, score: int, mode: str):
         total_daily_limit = DAILY_LIMIT + (1 if last_bonus == today else 0)
 
         if daily_used < total_daily_limit:
-            # Списываем дневную
             await db.execute("UPDATE users SET daily_used_today = daily_used_today + 1 WHERE user_id=?", (user_id,))
         elif bonus_balance > 0:
-            # Списываем бонусную
             await db.execute("UPDATE users SET bonus_balance = bonus_balance - 1 WHERE user_id=?", (user_id,))
         
-        # Пишем в лог
         await db.execute(
             "INSERT INTO requests (user_id, date, mode, score, is_success) VALUES (?, ?, ?, ?, ?)",
             (user_id, today, mode, score, 1),
@@ -244,12 +248,14 @@ async def log_request(user_id: int, score: int, mode: str):
 def _hash_image(image_bytes: bytes) -> str:
     return hashlib.sha256(image_bytes).hexdigest()
 
+
 async def get_cached(image_bytes: bytes, mode: str) -> dict | None:
     h = _hash_image(image_bytes)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT result_json FROM cache WHERE hash=? AND mode=?", (h, mode)) as cur:
             row = await cur.fetchone()
     return json.loads(row[0]) if row else None
+
 
 async def save_cache(image_bytes: bytes, mode: str, result: dict):
     h = _hash_image(image_bytes)
@@ -258,12 +264,25 @@ async def save_cache(image_bytes: bytes, mode: str, result: dict):
         await db.commit()
 
 
-# ─────────── РЕФЕРАЛКА И СТАТИСТИКА ───────────
+# ─────────── РЕФЕРАЛКА ───────────
 async def get_referral_count(user_id: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users WHERE referred_by=?", (user_id,)) as cur:
             row = await cur.fetchone()
     return row[0] if row else 0
+
+
+async def add_referral_bonus(user_id: int) -> bool:
+    """Начисляет бонус за друга. Идёт в bonus_balance."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+        await db.execute(
+            "UPDATE users SET bonus_balance = bonus_balance + ? WHERE user_id=?",
+            (REFERRAL_BONUS, user_id)
+        )
+        await db.commit()
+    return True
+
 
 async def get_weekly_top() -> list:
     seven_days_ago = (date.today() - timedelta(days=7)).isoformat()
@@ -276,6 +295,22 @@ async def get_weekly_top() -> list:
         """, (seven_days_ago,)) as cur:
             return await cur.fetchall()
 
+
+async def get_top_referrers(limit: int = 10) -> list:
+    """Возвращает топ юзеров по количеству приглашенных."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT u1.username, u1.user_id, COUNT(u2.user_id) as refs
+            FROM users u1
+            JOIN users u2 ON u2.referred_by = u1.user_id
+            GROUP BY u1.user_id
+            ORDER BY refs DESC
+            LIMIT ?
+        """, (limit,)) as cur:
+            return await cur.fetchall()
+
+
+# ─────────── СТАТИСТИКА ───────────
 async def get_full_stats() -> dict:
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -303,6 +338,7 @@ async def get_full_stats() -> dict:
         "top_users": top_users, "top_refs": top_referrers,
     }
 
+
 # ─────────── БАНЫ ───────────
 async def get_ban_status(user_id: int) -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -319,6 +355,7 @@ async def get_ban_status(user_id: int) -> dict:
                 return {"is_banned": True, "is_permanent": False, "violations": count, "remaining_min": remaining}
         except Exception: pass
     return {"is_banned": False, "is_permanent": False, "violations": count}
+
 
 async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -339,6 +376,7 @@ async def add_violation(user_id: int, reason: str = "мат/спам") -> dict:
             await db.commit()
             return {"action": "warning", "count": count}
 
+
 async def get_banned_users() -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
@@ -349,19 +387,8 @@ async def get_banned_users() -> list:
         """, (datetime.now().isoformat(),)) as cur:
             return await cur.fetchall()
 
+
 async def pardon_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM violations WHERE user_id=?", (user_id,))
         await db.commit()
-async def get_top_referrers(limit: int = 10) -> list:
-    """Возвращает топ юзеров по количеству приглашенных."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("""
-            SELECT u1.username, u1.user_id, COUNT(u2.user_id) as refs
-            FROM users u1
-            JOIN users u2 ON u2.referred_by = u1.user_id
-            GROUP BY u1.user_id
-            ORDER BY refs DESC
-            LIMIT ?
-        """, (limit,)) as cur:
-            return await cur.fetchall()
