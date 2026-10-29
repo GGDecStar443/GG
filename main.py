@@ -40,6 +40,7 @@ _last_menu_messages = {}
 class Mode(StatesGroup):
     waiting_photo = State()
     admin_give_bonus = State()
+    admin_manage_user = State() # НОВОЕ СОСТОЯНИЕ
 
 MODE_NAMES = {
     "toxic": "🧪 Токсик-Чек", "kent": "😎 Кент-Чек", "fortune": "🔮 Гадалка",
@@ -184,11 +185,23 @@ def _cat_meme_kb():
 def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
+        [InlineKeyboardButton(text="🔍 Управление юзером", callback_data="admin_manage")], # НОВАЯ КНОПКА
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="admin_top_refs")],
         [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
         [InlineKeyboardButton(text="💾 Сделать бэкап", callback_data="admin_backup")],
     ])
+
+def _admin_user_menu_kb(target_id: int, is_banned: bool):
+    buttons = []
+    if is_banned:
+        buttons.append([InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"admin_unban_{target_id}")])
+    else:
+        buttons.append([InlineKeyboardButton(text="🚫 Забанить навсегда", callback_data=f"admin_ban_{target_id}")])
+    
+    buttons.append([InlineKeyboardButton(text="🗑 Удалить из базы", callback_data=f"admin_del_{target_id}")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def _share_kb(mode: str):
     share_text = f"Смотри, что про меня выдал AI! 👉 @{config.BOT_USERNAME}"
@@ -279,13 +292,11 @@ async def global_error_handler(event):
     return True
 
 # ═══════════════════════════════════════════
-# СТАРТ (ИСПРАВЛЕННЫЙ РЕФЕРАЛ)
+# СТАРТ
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    
-    # 1. Проверка на бан
     if not await _require_not_banned(message.from_user.id):
         status = await database.get_ban_status(message.from_user.id)
         if status.get("is_permanent"):
@@ -294,7 +305,7 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
         return
 
-    # 2. РЕГИСТРАЦИЯ И РЕФЕРАЛ (ДО ПОЛИТИКИ!)
+    # 2. РЕФЕРАЛ И РЕГИСТРАЦИЯ (ДО ПОЛИТИКИ)
     args = message.text.split(maxsplit=1)
     ref_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
@@ -302,7 +313,6 @@ async def cmd_start(message: Message, state: FSMContext):
             ref_by = int(args[1][4:])
         except ValueError:
             pass
-            
     if ref_by == message.from_user.id:
         ref_by = None
 
@@ -310,21 +320,19 @@ async def cmd_start(message: Message, state: FSMContext):
     if ref_by:
         try:
             await database.add_referral_bonus(ref_by)
-            log.info(f"User {message.from_user.id} зарегистрирован по реферальной ссылке от {ref_by}")
         except Exception as e:
             log.warning("Referral bonus failed: %s", e)
 
-    # 3. Проверка политики
+    # 3. ПОЛИТИКА
     accepted = await database.is_privacy_accepted(message.from_user.id)
     if not accepted:
         await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
         return
 
-    # 4. Проверка подписки
     if not await _require_subscription(message):
         return
 
-    # 5. Выдача бонуса за вход и отправка меню
+    # 5. МЕНЮ
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
     ref_count = await database.get_referral_count(message.from_user.id)
@@ -452,7 +460,7 @@ async def cb_category(cb: CallbackQuery):
     await cb.answer()
 
 # ═══════════════════════════════════════════
-# РЕФЕРАЛКА (КОНКУРС)
+# РЕФЕРАЛКА
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
@@ -732,6 +740,7 @@ async def cmd_admin(message: Message, state: FSMContext):
         return
     await message.answer("👑 <b>Админ-панель</b>", reply_markup=_admin_menu_kb())
 
+# --- ВЫДАТЬ ПОПЫТКИ ---
 @dp.callback_query(F.data == "admin_give")
 async def cb_admin_give(cb: CallbackQuery, state: FSMContext):
     if cb.from_user.id != config.ADMIN_ID:
@@ -764,6 +773,112 @@ async def process_admin_give(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка. Формат: <code>ID количество</code>")
     await state.clear()
 
+# --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЕМ ---
+@dp.callback_query(F.data == "admin_manage")
+async def cb_admin_manage(cb: CallbackQuery, state: FSMContext):
+    if cb.from_user.id != config.ADMIN_ID:
+        await cb.answer("Только для админа", show_alert=True)
+        return
+    await state.set_state(Mode.admin_manage_user)
+    await cb.message.edit_text(
+        "🔍 Введи <b>ID пользователя</b>, чтобы управлять им:\n"
+        "Пример: <code>123456789</code>\n\n"
+        "Узнать ID можно у @userinfobot.",
+    )
+    await cb.answer()
+
+@dp.message(Mode.admin_manage_user, F.text)
+async def process_admin_manage(message: Message, state: FSMContext):
+    if message.from_user.id != config.ADMIN_ID:
+        return
+    try:
+        uid = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Ошибка. Введи числовой ID.")
+        return
+
+    # Собираем инфу о юзере
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        async with db.execute("SELECT username, bonus_balance, total_requests FROM users WHERE user_id=?", (uid,)) as cur:
+            user_data = await cur.fetchone()
+    
+    ban_status = await database.get_ban_status(uid)
+    is_banned = ban_status["is_banned"]
+    
+    if not user_data:
+        await message.answer(
+            f"⚠️ Пользователь с ID <code>{uid}</code> не найден в базе.\n"
+            f"Возможно, он еще не запускал бота.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage")]
+            ])
+        )
+        await state.clear()
+        return
+
+    username, bonus_bal, total_reqs = user_data
+    name_str = f"@{username}" if username else "Без username"
+    ban_str = "🚫 Забанен" if is_banned else "✅ Активен"
+    
+    text = (
+        f"👤 <b>Информация о пользователе</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📝 Имя: {name_str}\n"
+        f"📊 Всего запросов: {total_reqs}\n"
+        f"💎 Бонусные попытки: {bonus_bal}\n"
+        f"🚦 Статус: {ban_str}\n"
+    )
+    
+    kb = _admin_user_menu_kb(uid, is_banned)
+    await message.answer(text, reply_markup=kb)
+    await state.clear()
+
+# --- БАН/РАЗБАН/УДАЛЕНИЕ ---
+@dp.callback_query(F.data.startswith("admin_ban_"))
+async def cb_admin_ban(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        return
+    uid = int(cb.data.split("_")[2])
+    
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO violations (user_id, violations_count, banned_until, is_permanent, reason) VALUES (?, 3, NULL, 1, 'Ручной бан админом')", (uid,))
+        await db.commit()
+        
+    await cb.message.edit_text(f"🚫 Пользователь <code>{uid}</code> забанен навсегда.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ В админку", callback_data="admin_manage")]
+    ]))
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("admin_unban_"))
+async def cb_admin_unban(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        return
+    uid = int(cb.data.split("_")[2])
+    
+    await database.pardon_user(uid)
+    await cb.message.edit_text(f"✅ Пользователь <code>{uid}</code> разбанен.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ В админку", callback_data="admin_manage")]
+    ]))
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("admin_del_"))
+async def cb_admin_del(cb: CallbackQuery):
+    if cb.from_user.id != config.ADMIN_ID:
+        return
+    uid = int(cb.data.split("_")[2])
+    
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute("DELETE FROM users WHERE user_id=?", (uid,))
+        await db.execute("DELETE FROM requests WHERE user_id=?", (uid,))
+        await db.execute("DELETE FROM violations WHERE user_id=?", (uid,))
+        await db.commit()
+        
+    await cb.message.edit_text(f"🗑 Пользователь <code>{uid}</code> и все его данные удалены из базы.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ В админку", callback_data="admin_manage")]
+    ]))
+    await cb.answer()
+
+# --- СТАТИСТИКА ---
 @dp.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(cb: CallbackQuery):
     if cb.from_user.id != config.ADMIN_ID:
