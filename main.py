@@ -8,7 +8,7 @@ import tempfile
 import time
 import shutil
 from datetime import datetime
-import aiosqlite
+import aiosqlite # <--- ИСПРАВЛЕНИЕ
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -41,7 +41,7 @@ _last_menu_messages = {}
 class Mode(StatesGroup):
     waiting_photo = State()
     admin_give_bonus = State()
-    admin_manage_user = State() # НОВОЕ СОСТОЯНИЕ
+    admin_manage_user = State()
 
 MODE_NAMES = {
     "toxic": "🧪 Токсик-Чек", "kent": "😎 Кент-Чек", "fortune": "🔮 Гадалка",
@@ -186,7 +186,7 @@ def _cat_meme_kb():
 def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
-        [InlineKeyboardButton(text="🔍 Управление юзером", callback_data="admin_manage")], # НОВАЯ КНОПКА
+        [InlineKeyboardButton(text="🔍 Управление юзером", callback_data="admin_manage")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="admin_top_refs")],
         [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
