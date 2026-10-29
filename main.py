@@ -1,4 +1,4 @@
-# Мега-бот: 13 режимов + UX + юридика + админка + защита + конкурс
+# Мега-бот: 13 режимов + UX + юридика + админка + защита + конкурс + магазин
 import asyncio
 import logging
 import os
@@ -35,7 +35,6 @@ bot = Bot(token=config.BOT_TOKEN,
           default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Хранилище ID последних сообщений с меню (user_id -> message_id)
 _last_menu_messages = {}
 
 class Mode(StatesGroup):
@@ -140,6 +139,7 @@ def _main_menu_kb():
         [InlineKeyboardButton(text="🎲 Случайный анализ", callback_data="random_mode")],
         [InlineKeyboardButton(text="🏆 Топ недели", callback_data="top_week")],
         [InlineKeyboardButton(text="🎁 Пригласить друга", callback_data="invite")],
+        [InlineKeyboardButton(text="💎 Купить попытки", callback_data="shop")],  # НОВАЯ КНОПКА
         [InlineKeyboardButton(text="❓ Помощь", callback_data="help")],
         [InlineKeyboardButton(text="📄 Политика", callback_data="privacy")],
     ])
@@ -181,7 +181,7 @@ def _admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 Выдать попытки", callback_data="admin_give")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="admin_top_refs")],  # НОВАЯ КНОПКА
+        [InlineKeyboardButton(text="🏆 Топ рефереров", callback_data="admin_top_refs")],
         [InlineKeyboardButton(text="🚫 Чёрный список", callback_data="admin_blacklist")],
         [InlineKeyboardButton(text="💾 Сделать бэкап", callback_data="admin_backup")],
     ])
@@ -360,6 +360,40 @@ async def cmd_start(message: Message, state: FSMContext):
     msg = await message.answer(text, reply_markup=_main_menu_kb())
     _last_menu_messages[message.from_user.id] = msg.message_id
 
+# ═══════════════════════════════════════════
+# МАГАЗИН ПОПЫТОК
+# ═══════════════════════════════════════════
+@dp.callback_query(F.data == "shop")
+async def cb_shop(cb: CallbackQuery):
+    if not await _require_not_banned(cb.from_user.id):
+        await cb.answer("Ты забанен", show_alert=True)
+        return
+    
+    text = (
+        "💎 <b>МАГАЗИН ПОПЫТОК</b>\n\n"
+        "Закончились проверки? Не беда! Ты можешь купить бонусные попытки, "
+        "которые <b>не сгорают</b> и тратятся только тогда, когда закончатся дневные.\n\n"
+        "📦 <b>Наши тарифы:</b>\n\n"
+        "🔹 <b>1 попытка</b> — 3 ₽\n"
+        "🔹 <b>5 попыток</b> — 15 ₽\n"
+        "🔹 <b>10 попыток</b> — 30 ₽\n"
+        "🔥 <b>50 попыток + 10 бонусом</b> — 150 ₽\n\n"
+        "💳 <b>Как купить:</b>\n"
+        "Нажми на кнопку ниже, напиши Админу, какую сумму ты переводишь, "
+        "и прикрепи чек об оплате. Попытки зачислятся в течение 5 минут!\n\n"
+        f"👉 <b>Написать Админу:</b> {config.ADMIN_URL}"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Написать Админу для покупки", url=config.ADMIN_URL)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")]
+    ])
+    
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except TelegramAPIError:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
 
 # ═══════════════════════════════════════════
 # КАТЕГОРИИ И МЕНЮ
@@ -425,6 +459,7 @@ async def cb_invite(cb: CallbackQuery):
         f"🥇 1 место: <b>100 попыток + VIP</b>\n"
         f"🥈 2 место: <b>50 попыток</b>\n"
         f"🥉 3 место: <b>30 попыток</b>\n"
+        f"🎁 Всем, кто привел 3+ друзей: <b>10 попыток</b>\n\n"
         f"<i>Кидай ссылку друзьям в чаты и сторис!</i>"
     )
     
@@ -435,7 +470,6 @@ async def cb_invite(cb: CallbackQuery):
     await _send_or_replace_menu(cb, text, kb)
     await cb.answer()
 
-
 @dp.message(Command("myref"))
 async def cmd_myref(m: Message):
     ref_count = await database.get_referral_count(m.from_user.id)
@@ -444,7 +478,6 @@ async def cmd_myref(m: Message):
         f"🎁 Приглашено: <b>{ref_count}</b> друзей\n\n"
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>"
     )
-
 
 # ═══════════════════════════════════════════
 # ТОП НЕДЕЛИ И РАНДОМ
@@ -471,7 +504,6 @@ async def cb_random(cb: CallbackQuery, state: FSMContext):
         pass
     await cb.answer("Рандом выбрал режим!", show_alert=False)
 
-
 @dp.callback_query(F.data.startswith("retry_"))
 async def cb_retry(cb: CallbackQuery, state: FSMContext):
     if not await _require_not_banned(cb.from_user.id):
@@ -495,7 +527,6 @@ async def cb_retry(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await cb.answer("Жду новое фото!")
-
 
 @dp.callback_query(F.data == "top_week")
 async def cb_top_week(cb: CallbackQuery):
@@ -528,7 +559,6 @@ async def cb_top_week(cb: CallbackQuery):
     except TelegramAPIError:
         await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
-
 
 @dp.callback_query(F.data.startswith("m_"))
 async def cb_choose_mode(cb: CallbackQuery, state: FSMContext):
@@ -753,7 +783,6 @@ async def cb_admin_stats(cb: CallbackQuery):
         await cb.message.answer("Ошибка при сборе статистики.")
     await cb.answer()
 
-# НОВЫЙ ОБРАБОТЧИК ТОПА РЕФЕРЕРОВ
 @dp.callback_query(F.data == "admin_top_refs")
 async def cb_admin_top_refs(cb: CallbackQuery):
     if cb.from_user.id != config.ADMIN_ID:
@@ -896,7 +925,8 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.answer(
                 "🚫 Лимит на сегодня исчерпан.\n\n"
                 f"🎁 Пригласи друга — получишь +{config.REFERRAL_BONUS} проверку:\n"
-                f"<code>{ref_link}</code>",
+                f"<code>{ref_link}</code>\n\n"
+                f"💎 Или <b>купи попытки</b> в меню (они не сгорают!)"
             )
             return
 
