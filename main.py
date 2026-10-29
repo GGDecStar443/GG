@@ -279,11 +279,13 @@ async def global_error_handler(event):
     return True
 
 # ═══════════════════════════════════════════
-# СТАРТ
+# СТАРТ (ИСПРАВЛЕННЫЙ РЕФЕРАЛ)
 # ═══════════════════════════════════════════
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    
+    # 1. Проверка на бан
     if not await _require_not_banned(message.from_user.id):
         status = await database.get_ban_status(message.from_user.id)
         if status.get("is_permanent"):
@@ -292,11 +294,7 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
         return
 
-    accepted = await database.is_privacy_accepted(message.from_user.id)
-    if not accepted:
-        await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
-        return
-
+    # 2. РЕГИСТРАЦИЯ И РЕФЕРАЛ (ДО ПОЛИТИКИ!)
     args = message.text.split(maxsplit=1)
     ref_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
@@ -304,6 +302,7 @@ async def cmd_start(message: Message, state: FSMContext):
             ref_by = int(args[1][4:])
         except ValueError:
             pass
+            
     if ref_by == message.from_user.id:
         ref_by = None
 
@@ -311,12 +310,21 @@ async def cmd_start(message: Message, state: FSMContext):
     if ref_by:
         try:
             await database.add_referral_bonus(ref_by)
+            log.info(f"User {message.from_user.id} зарегистрирован по реферальной ссылке от {ref_by}")
         except Exception as e:
             log.warning("Referral bonus failed: %s", e)
 
+    # 3. Проверка политики
+    accepted = await database.is_privacy_accepted(message.from_user.id)
+    if not accepted:
+        await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
+        return
+
+    # 4. Проверка подписки
     if not await _require_subscription(message):
         return
 
+    # 5. Выдача бонуса за вход и отправка меню
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
     ref_count = await database.get_referral_count(message.from_user.id)
@@ -365,7 +373,7 @@ async def cmd_start(message: Message, state: FSMContext):
     _last_menu_messages[message.from_user.id] = msg.message_id
 
 # ═══════════════════════════════════════════
-# МАГАЗИН ПОПЫТОК (Исправлена ошибка)
+# МАГАЗИН ПОПЫТОК
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "shop")
 async def cb_shop(cb: CallbackQuery):
@@ -388,20 +396,16 @@ async def cb_shop(cb: CallbackQuery):
         f"👉 <b>Написать Админу:</b> {config.ADMIN_URL if config.ADMIN_URL else 'Ссылка на админа не настроена'}"
     )
     
-    # Защита от пустой ссылки
     buttons = []
-    if config.ADMIN_URL:
+    if config.ADMIN_URL and config.ADMIN_URL.startswith("http"):
         buttons.append([InlineKeyboardButton(text="💳 Написать Админу для покупки", url=config.ADMIN_URL)])
     else:
-        buttons.append([InlineKeyboardButton(text="⚠️ Ссылка на админа не настроена", callback_data="none")])
+        buttons.append([InlineKeyboardButton(text="⚠️ Ссылка на админа не настроена", callback_data="back_main")])
     
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_main")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     
-    try:
-        await cb.message.edit_text(text, reply_markup=kb)
-    except TelegramAPIError:
-        await cb.message.answer(text, reply_markup=kb)
+    await cb.message.answer(text, reply_markup=kb)
     await cb.answer()
 
 # ═══════════════════════════════════════════
@@ -448,7 +452,7 @@ async def cb_category(cb: CallbackQuery):
     await cb.answer()
 
 # ═══════════════════════════════════════════
-# РЕФЕРАЛКА (КОНКУРС) - УБРАЛИ + VIP
+# РЕФЕРАЛКА (КОНКУРС)
 # ═══════════════════════════════════════════
 @dp.callback_query(F.data == "invite")
 async def cb_invite(cb: CallbackQuery):
@@ -465,7 +469,7 @@ async def cb_invite(cb: CallbackQuery):
         f"🔗 <b>Твоя ссылка для конкурса:</b>\n"
         f"<code>{ref_link}</code>\n\n"
         f"🏆 <b>Призы конкурса:</b>\n"
-        f"🥇 1 место: <b>100 попыток</b>\n" # УБРАЛИ + VIP
+        f"🥇 1 место: <b>100 попыток</b>\n"
         f"🥈 2 место: <b>50 попыток</b>\n"
         f"🥉 3 место: <b>30 попыток</b>\n"
         f"🎁 Всем, кто привел 3+ друзей: <b>10 попыток</b>\n\n"
