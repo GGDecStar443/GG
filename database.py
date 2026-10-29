@@ -353,3 +353,15 @@ async def pardon_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM violations WHERE user_id=?", (user_id,))
         await db.commit()
+async def get_top_referrers(limit: int = 10) -> list:
+    """Возвращает топ юзеров по количеству приглашенных."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT u1.username, u1.user_id, COUNT(u2.user_id) as refs
+            FROM users u1
+            JOIN users u2 ON u2.referred_by = u1.user_id
+            GROUP BY u1.user_id
+            ORDER BY refs DESC
+            LIMIT ?
+        """, (limit,)) as cur:
+            return await cur.fetchall()
