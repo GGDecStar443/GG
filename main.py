@@ -8,7 +8,7 @@ import tempfile
 import time
 import shutil
 from datetime import datetime
-import aiosqlite # <--- ИСПРАВЛЕНИЕ
+import aiosqlite
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -306,7 +306,6 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer(f"⏳ Ты забанен на {status.get('remaining_min', 30)} мин. за нарушения.")
         return
 
-    # 2. РЕФЕРАЛ И РЕГИСТРАЦИЯ (ДО ПОЛИТИКИ)
     args = message.text.split(maxsplit=1)
     ref_by = None
     if len(args) > 1 and args[1].startswith("ref_"):
@@ -324,7 +323,6 @@ async def cmd_start(message: Message, state: FSMContext):
         except Exception as e:
             log.warning("Referral bonus failed: %s", e)
 
-    # 3. ПОЛИТИКА
     accepted = await database.is_privacy_accepted(message.from_user.id)
     if not accepted:
         await message.answer(PRIVACY_TEXT, reply_markup=_privacy_accept_kb())
@@ -333,7 +331,6 @@ async def cmd_start(message: Message, state: FSMContext):
     if not await _require_subscription(message):
         return
 
-    # 5. МЕНЮ
     daily_given = await database.check_daily_bonus(message.from_user.id)
     daily_text = "🎁 <b>+1 бесплатная проверка</b> за вход сегодня!\n\n" if daily_given else ""
     ref_count = await database.get_referral_count(message.from_user.id)
@@ -798,7 +795,6 @@ async def process_admin_manage(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка. Введи числовой ID.")
         return
 
-    # Собираем инфу о юзере
     async with aiosqlite.connect(config.DB_PATH) as db:
         async with db.execute("SELECT username, bonus_balance, total_requests FROM users WHERE user_id=?", (uid,)) as cur:
             user_data = await cur.fetchone()
@@ -1028,6 +1024,7 @@ async def handle_unsupported_content(message: Message):
 async def handle_photo(message: Message, state: FSMContext):
     tmp = None
     user_id = message.from_user.id
+    attempt_type = None # Запоминаем, откуда списали
 
     try:
         if not await _require_not_banned(user_id):
@@ -1065,10 +1062,18 @@ async def handle_photo(message: Message, state: FSMContext):
             await message.answer("Режим потерян. Нажми /start")
             return
 
+        # 2. СПИСЫВАЕМ ПОПЫТКУ (сразу!)
+        spend_result = await database.use_attempt(user_id, config.DAILY_LIMIT)
+        if not spend_result["success"]:
+            await message.answer("🚫 Не удалось списать попытку. Попробуй позже.")
+            return
+        attempt_type = spend_result["type"]
+
         try:
             photo = message.photo[-1]
             if photo.file_size and photo.file_size > 20 * 1024 * 1024:
                 await message.answer("❌ Фото больше 20 МБ.")
+                await database.refund_attempt(user_id, attempt_type)
                 return
             file = await bot.get_file(photo.file_id)
             fd, tmp = tempfile.mkstemp(suffix=".jpg")
@@ -1078,28 +1083,39 @@ async def handle_photo(message: Message, state: FSMContext):
                 img_bytes = f.read()
             if not img_bytes:
                 await message.answer("❌ Фото пустое. Попробуй другое.")
+                await database.refund_attempt(user_id, attempt_type)
                 return
         except Exception as e:
             log.exception("Download error: %s", e)
             await message.answer("❌ Не смог скачать фото.")
+            await database.refund_attempt(user_id, attempt_type)
             return
 
         wait = await message.answer("🔍 Анализирую...")
 
         result = await database.get_cached(img_bytes, mode)
-        from_cache = result is not None
-
-        if not from_cache:
+        
+        if result is None:
             try:
                 result = await llm_client.analyze(img_bytes, mode=mode)
                 await database.save_cache(img_bytes, mode, result)
             except Exception as e:
                 log.exception("LLM error: %s", e)
-                try:
-                    await wait.edit_text("😴 Бот устал, попробуй через минуту.")
-                except Exception:
-                    pass
+                await wait.edit_text("😴 Бот устал, попробуй через минуту.")
+                await database.refund_attempt(user_id, attempt_type)
                 return
+
+        score_field = MODE_SCORE_FIELD.get(mode)
+        raw_score = result.get(score_field, 0) if score_field else 0
+        try:
+            score = int(raw_score) if raw_score else 0
+        except (ValueError, TypeError):
+            score = 0
+
+        if mode == "toxic" and score == 0:
+            await wait.edit_text("😴 Не удалось распознать переписку, попробуй другой скрин.")
+            await database.refund_attempt(user_id, attempt_type)
+            return
 
         try:
             if mode == "meme":
@@ -1112,10 +1128,8 @@ async def handle_photo(message: Message, state: FSMContext):
                 )
         except Exception as e:
             log.exception("Card error: %s", e)
-            try:
-                await wait.edit_text("Не смог собрать карточку.")
-            except Exception:
-                pass
+            await wait.edit_text("Не смог собрать карточку.")
+            await database.refund_attempt(user_id, attempt_type)
             return
 
         captions = {
@@ -1143,37 +1157,20 @@ async def handle_photo(message: Message, state: FSMContext):
             except Exception:
                 pass
 
-            if not from_cache:
-                score_field = MODE_SCORE_FIELD.get(mode)
-                raw = result.get(score_field, 0) if score_field else 0
-                try:
-                    score = int(raw) if raw else 0
-                except (ValueError, TypeError):
-                    score = 0
-                
-                await database.log_request(user_id, score, mode)
-
-                if mode == "toxic" and score == 0:
-                    await message.answer(
-                        "🎁 <b>Бот не смог распознать переписку</b>, "
-                        "поэтому <b>проверка НЕ была списана</b>.\n\n"
-                        "Попробуй скинуть более чёткий скрин."
-                    )
+            await database.log_request(user_id, score, mode)
+            
         except TelegramAPIError as e:
             log.exception("Send error: %s", e)
-            try:
-                await wait.edit_text("Не смог отправить результат.")
-            except Exception:
-                pass
+            await wait.edit_text("Не смог отправить результат.")
+            await database.refund_attempt(user_id, attempt_type)
 
         await state.clear()
 
     except Exception as e:
         log.exception("Unhandled error in handle_photo: %s", e)
-        try:
-            await message.answer("😅 Что-то пошло не так. Нажми /start")
-        except Exception:
-            pass
+        await message.answer("😅 Что-то пошло не так. Нажми /start")
+        if attempt_type and attempt_type != "none":
+            await database.refund_attempt(user_id, attempt_type)
     finally:
         if tmp and os.path.exists(tmp):
             try:
