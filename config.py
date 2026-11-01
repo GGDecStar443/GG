@@ -13,7 +13,6 @@ ADMIN_ID: int = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_URL: str = os.getenv("ADMIN_URL", "https://t.me/your_admin_username")
 
 # ─── LLM (VseGPT) ───
-# Поддерживаем ОБА имени переменных (LLM_* и старое GROQ_*)
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or os.getenv("GROQ_API_KEY", "")
 LLM_API_URL: str = (
     os.getenv("LLM_API_URL", "")
@@ -32,11 +31,12 @@ REFERRAL_BONUS: int = int(os.getenv("REFERRAL_BONUS", "1"))
 REFERRAL_DAILY_LIMIT: int = int(os.getenv("REFERRAL_DAILY_LIMIT", "10"))
 
 # ─── Монетизация ───
-# Пусто = проверка подписки отключена
 REQUIRED_CHANNEL: str = os.getenv("REQUIRED_CHANNEL", "")
 
-# ─── База ───
-DB_PATH: str = os.getenv("DB_PATH", "data/mega_bot.db")
+# ─── База (PostgreSQL) ───
+DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL не задан в переменных окружения")
 
 # ─── Валидация ───
 if not BOT_TOKEN:
