@@ -1,6 +1,5 @@
 import asyncio, logging, os, re, random, tempfile, time, shutil
 from datetime import datetime
-import aiosqlite
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -273,9 +272,9 @@ async def process_admin_manage(message: Message, state: FSMContext):
     try: uid = int(message.text.strip())
     except ValueError: await message.answer("❌ Ошибка. Введи числовой ID."); return
 
-    async with aiosqlite.connect(config.DB_PATH) as db:
-        async with db.execute("SELECT username, bonus_balance, total_requests FROM users WHERE user_id=?", (uid,)) as cur:
-            user_data = await cur.fetchone()
+    async with database.pool.acquire() as c:
+        row = await c.fetchrow("SELECT username, bonus_balance, total_requests FROM users WHERE user_id=$1", uid)
+        user_data = (row["username"], row["bonus_balance"], row["total_requests"]) if row else None
     ban_status = await database.get_ban_status(uid)
     is_banned = ban_status["is_banned"]
     
@@ -313,11 +312,10 @@ async def cb_admin_unban(cb: CallbackQuery):
 async def cb_admin_del(cb: CallbackQuery):
     if cb.from_user.id != config.ADMIN_ID: return
     uid = int(cb.data.split("_")[2])
-    async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute("DELETE FROM users WHERE user_id=?", (uid,))
-        await db.execute("DELETE FROM requests WHERE user_id=?", (uid,))
-        await db.execute("DELETE FROM violations WHERE user_id=?", (uid,))
-        await db.commit()
+    async with database.pool.acquire() as c:
+        await c.execute("DELETE FROM users WHERE user_id=$1", uid)
+        await c.execute("DELETE FROM requests WHERE user_id=$1", uid)
+        await c.execute("DELETE FROM violations WHERE user_id=$1", uid)
     await cb.message.edit_text(f"🗑 Пользователь <code>{uid}</code> и все его данные удалены из базы.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ В админку", callback_data="admin_manage")]]))
     await cb.answer()
 
