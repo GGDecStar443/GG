@@ -10,7 +10,6 @@ async def init_db():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     async with pool.acquire() as c:
-        # Таблица пользователей
         await c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -26,7 +25,6 @@ async def init_db():
                 privacy_accepted BOOLEAN DEFAULT FALSE
             )
         """)
-        # Таблица запросов
         await c.execute("""
             CREATE TABLE IF NOT EXISTS requests (
                 id BIGSERIAL PRIMARY KEY,
@@ -37,7 +35,6 @@ async def init_db():
                 is_success BOOLEAN DEFAULT TRUE
             )
         """)
-        # Таблица кэша (чтобы не гонять LLM зря)
         await c.execute("""
             CREATE TABLE IF NOT EXISTS cache (
                 hash TEXT PRIMARY KEY,
@@ -46,7 +43,6 @@ async def init_db():
                 created TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        # Таблица нарушений
         await c.execute("""
             CREATE TABLE IF NOT EXISTS violations (
                 user_id BIGINT PRIMARY KEY,
@@ -155,7 +151,7 @@ async def log_request(user_id: int, score: int, mode: str):
     async with pool.acquire() as c:
         await c.execute(
             "INSERT INTO requests (user_id, date, mode, score, is_success) VALUES ($1, $2, $3, $4, $5)",
-            user_id, today, mode, score, 1 if score > 0 else 0,
+            user_id, today, mode, score, True if score > 0 else False,
         )
         await c.execute("UPDATE users SET total_requests = total_requests + 1, points = points + 10 WHERE user_id=$1", user_id)
 
