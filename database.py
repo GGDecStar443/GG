@@ -10,6 +10,7 @@ async def init_db():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     async with pool.acquire() as c:
+        # Таблица пользователей
         await c.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -25,6 +26,7 @@ async def init_db():
                 privacy_accepted BOOLEAN DEFAULT FALSE
             )
         """)
+        # Таблица запросов
         await c.execute("""
             CREATE TABLE IF NOT EXISTS requests (
                 id BIGSERIAL PRIMARY KEY,
@@ -35,6 +37,7 @@ async def init_db():
                 is_success BOOLEAN DEFAULT TRUE
             )
         """)
+        # Таблица кэша (чтобы не гонять LLM зря)
         await c.execute("""
             CREATE TABLE IF NOT EXISTS cache (
                 hash TEXT PRIMARY KEY,
@@ -43,6 +46,7 @@ async def init_db():
                 created TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        # Таблица нарушений
         await c.execute("""
             CREATE TABLE IF NOT EXISTS violations (
                 user_id BIGINT PRIMARY KEY,
